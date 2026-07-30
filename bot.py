@@ -1,4 +1,6 @@
+import requests
 
+API_KEY = os.getenv("FOOTBALL_API_KEY")
 import os
 import feedparser
 from telegram import Bot
