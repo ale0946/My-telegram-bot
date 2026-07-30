@@ -68,3 +68,29 @@ async def send_news():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(send_news())
+def get_live_matches():
+    url = "https://v3.football.api-sports.io/fixtures?live=all"
+
+    headers = {
+        "x-apisports-key": API_KEY
+    }
+
+    response = requests.get(url, headers=headers)
+
+    data = response.json()
+
+    matches = []
+
+    for game in data.get("response", []):
+        home = game["teams"]["home"]["name"]
+        away = game["teams"]["away"]["name"]
+
+        if "Liverpool" in home or "Liverpool" in away:
+            score_home = game["goals"]["home"]
+            score_away = game["goals"]["away"]
+
+            matches.append(
+                f"⚽ {home} {score_home}-{score_away} {away}"
+            )
+
+    return matches
