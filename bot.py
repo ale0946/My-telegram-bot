@@ -1,6 +1,6 @@
 import os
 import feedparser
-from telegram.ext import Application
+from telegram import Bot
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = "@yegnaLiverpool"
@@ -9,7 +9,7 @@ RSS_URL = "https://www.thisisanfield.com/feed/"
 FILE = "last_news.txt"
 
 
-async def send_news(context):
+async def send_news():
     news = feedparser.parse(RSS_URL)
 
     if not news.entries:
@@ -24,38 +24,35 @@ async def send_news(context):
 
     if os.path.exists(FILE):
         with open(FILE, "r") as f:
-            old_news = f.read()
+            old_news = f.read().strip()
 
-    # አስቀድሞ ከተላከ አይድገም
     if link == old_news:
+        print("No new news")
         return
 
     text = f"""
-🔴 LIVERPOOL NEWS
+🔴 የሊቨርፑል ዜና
 
 📰 {title}
 
 🔗 {link}
 
-@yegnaLiverpool
+📢 @yegnaLiverpool
 """
 
-    await context.bot.send_message(
+    bot = Bot(token=TOKEN)
+
+    await bot.send_message(
         chat_id=CHANNEL_ID,
         text=text
     )
 
-    # አዲሱን ዜና አስቀምጥ
     with open(FILE, "w") as f:
         f.write(link)
 
+    print("News sent successfully")
 
-app = Application.builder().token(TOKEN).build()
 
-app.job_queue.run_repeating(
-    send_news,
-    interval=300,
-    first=5
-)
-
-app.run_polling()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(send_news())
