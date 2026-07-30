@@ -1,1 +1,1 @@
-# My-telegram-bot
+print("Telegram News Bot is ready!")
