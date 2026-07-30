@@ -1,3 +1,4 @@
+
 import os
 import feedparser
 from telegram import Bot
@@ -5,37 +6,46 @@ from telegram import Bot
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = "@yegnaLiverpool"
 
-RSS_URL = "https://www.thisisanfield.com/feed/"
 FILE = "last_news.txt"
+SOURCES_FILE = "sources.txt"
+
+
+def get_sources():
+    with open(SOURCES_FILE, "r") as f:
+        return [line.strip() for line in f if line.strip()]
 
 
 async def send_news():
-    news = feedparser.parse(RSS_URL)
-
-    if not news.entries:
-        return
-
-    item = news.entries[0]
-
-    title = item.title
-    link = item.link
-
     old_news = ""
 
     if os.path.exists(FILE):
         with open(FILE, "r") as f:
             old_news = f.read().strip()
 
-    if link == old_news:
+    latest = None
+
+    for source in get_sources():
+        news = feedparser.parse(source)
+
+        if news.entries:
+            item = news.entries[0]
+
+            if item.link != old_news:
+                latest = item
+                break
+
+    if not latest:
         print("No new news")
         return
 
+    title = latest.title
+
     text = f"""
-🔴 የሊቨርፑል ዜና
+🚨🔴 የሊቨርፑል ዜና
 
-📰 {title}
+📝 {title}
 
-🔗 {link}
+📰 ምንጭ: Liverpool News
 
 📢 @yegnaLiverpool
 """
@@ -48,7 +58,7 @@ async def send_news():
     )
 
     with open(FILE, "w") as f:
-        f.write(link)
+        f.write(latest.link)
 
     print("News sent successfully")
 
