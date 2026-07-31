@@ -8,7 +8,7 @@ from groq import Groq
 TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("FOOTBALL_API_KEY")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
-
+print("GROQ_KEY =", GROQ_KEY)
 CHANNEL_ID = "@yegnaLiverpool"
 
 FILE = "last_news.txt"
