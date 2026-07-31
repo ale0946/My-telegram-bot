@@ -8,8 +8,8 @@ from groq import Groq
 
 
 TOKEN = os.getenv("BOT_TOKEN")
-API_KEY = os.getenv("FOOTBALL_API_KEY")
 GROQ_KEY = os.environ["GROQ_API_KEY"]
+API_KEY = os.environ["FOOTBALL_API_KEY"]
 
 CHANNEL_ID = "@yegnaLiverpool"
 
@@ -20,35 +20,48 @@ SOURCES_FILE = "sources.txt"
 client = Groq(api_key=GROQ_KEY)
 
 
+
 def get_sources():
     with open(SOURCES_FILE, "r") as f:
         return [line.strip() for line in f if line.strip()]
 
 
-def translate_news(title):
+
+def translate_news(news_text):
     try:
         result = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {
                     "role": "system",
-                    "content": "የሊቨርፑል የስፖርት ዜና አርታኢ ነህ። የእንግሊዝኛ ዜናን ወደ ተፈጥሯዊ አማርኛ ቀይር። አጭርና ሙያዊ አድርግ።"
+                    "content": """
+አንተ የሊቨርፑል እግር ኳስ ዜና አርታኢ ነህ።
+
+የተሰጠውን ዜና ወደ ተፈጥሯዊ አማርኛ ቀይር።
+
+ህጎች:
+- ቃል በቃል አትተርጉም
+- እንደ የስፖርት ጋዜጠኛ ጻፍ
+- ከዜናው ውጪ መረጃ አትጨምር
+- የተጫዋቾች እና ክለቦች ስም አትቀይር
+- አጭርና ግልጽ አድርግ
+"""
                 },
                 {
                     "role": "user",
-                    "content": title
+                    "content": news_text
                 }
-            ]
+            ],
+            temperature=0.2,
+            max_tokens=300
         )
 
-        return result.choices[0].message.content
+        return result.choices[0].message.content.strip()
 
     except Exception as e:
         print("Groq Error:", e)
-        return title
-
-
-def get_live_matches():
+        return news_text
+ def get_live_matches():
     url = "https://v3.football.api-sports.io/fixtures?live=all"
 
     headers = {
@@ -56,7 +69,7 @@ def get_live_matches():
     }
 
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
 
         matches = []
@@ -82,8 +95,10 @@ def get_live_matches():
         return []
 
 
+
 def get_image(item):
     try:
+
         if hasattr(item, "media_content"):
             return item.media_content[0]["url"]
 
@@ -96,6 +111,7 @@ def get_image(item):
     return None
 
 
+
 async def send_news():
 
     old_news = ""
@@ -106,6 +122,7 @@ async def send_news():
 
 
     latest = None
+
 
     for source in get_sources():
 
@@ -125,7 +142,15 @@ async def send_news():
         return
 
 
-    translated = translate_news(latest.title)
+
+    news_text = latest.title
+
+    if hasattr(latest, "summary"):
+        news_text += "\n\n" + latest.summary
+
+
+    translated = translate_news(news_text)
+
 
 
     live = get_live_matches()
@@ -138,8 +163,8 @@ async def send_news():
         live_text = "⚽ አሁን የሊቨርፑል ቀጥታ ጨዋታ የለም"
 
 
-    text = f"""
 
+    text = f"""
 📝 {translated}
 
 {live_text}
@@ -147,11 +172,11 @@ async def send_news():
 📰 ምንጭ: Liverpool News
 
 📢 @yegnaLiverpool
-
 """
 
 
     bot = Bot(token=TOKEN)
+
 
     image = get_image(latest)
 
@@ -179,6 +204,6 @@ async def send_news():
     print("News sent successfully")
 
 
-if __name__ == "__main__":
 
-    asyncio.run(send_news())
+if __name__ == "__main__":
+    asyncio.run(send_news())       
