@@ -23,7 +23,7 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run bot
+    - name: Run bot
   env:
     BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
     FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
