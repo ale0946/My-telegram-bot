@@ -103,7 +103,7 @@ def get_live_matches():
         print("Football API Error:", e)
         return[] 
     def get_image(item):
-    try:
+        try:
 
         if hasattr(item, "media_content"):
             return item.media_content[0]["url"]
