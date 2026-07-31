@@ -224,6 +224,8 @@ def get_image(item):
 
 async def send_news():
 
+    print("Sources:", get_sources())
+
     old_news = get_last_news()
 
     latest = None
