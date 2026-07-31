@@ -1,5 +1,10 @@
-
-            "Liverpool" in home or "Liverpool" in away:
+import os
+import requests
+import feedparser
+import asyncio
+from telegram import Bot
+from groq import Groq
+            
                 home_score = game["goals"]["home"]
                 away_score = game["goals"]["away"]
 
