@@ -101,7 +101,7 @@ def get_live_matches():
 
     except Exception as e:
         print("Football API Error:", e)
-        return [] 
+        return[] 
     def get_image(item):
     try:
 
