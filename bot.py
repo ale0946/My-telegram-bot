@@ -1,5 +1,5 @@
 
-            if "Liverpool" in home or "Liverpool" in away:
+            "Liverpool" in home or "Liverpool" in away:
                 home_score = game["goals"]["home"]
                 away_score = game["goals"]["away"]
 
