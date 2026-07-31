@@ -232,10 +232,9 @@ async def send_news():
 
 
     text = f"""
-🔴 Liverpool News
+{news_type}
 
 📝 {translated}
-{live_text}
 
 📰 ምንጭ: Liverpool News
 
