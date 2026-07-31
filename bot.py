@@ -7,15 +7,15 @@ from groq import Groq
 
 TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("FOOTBALL_API_KEY")
-GROQ_KEY = os.getenv("GROQ_API_KEY")
+GROQ_KEY = os.environ["GROQ_API_KEY"]
 print("GROQ_KEY =", GROQ_KEY)
 CHANNEL_ID = "@yegnaLiverpool"
 
 FILE = "last_news.txt"
 SOURCES_FILE = "sources.txt"
 
-client = Groq(api_key=GROQ_KEY)
 
+client = Groq(api_key=GROQ_KEY)
 
 def get_sources():
     with open(SOURCES_FILE, "r") as f:
