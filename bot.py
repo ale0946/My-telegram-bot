@@ -61,7 +61,7 @@ def translate_news(news_text):
     except Exception as e:
         print("Groq Error:", e)
         return news_text
- def get_live_matches():
+ def get_live_matches
     url = "https://v3.football.api-sports.io/fixtures?live=all"
 
     headers = {
