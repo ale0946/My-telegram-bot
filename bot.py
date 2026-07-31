@@ -90,21 +90,22 @@ def get_last_news():
 
 
     return ""
-
-
-
 def save_last_news(link):
 
     with open(NEWS_FILE, "w") as file:
 
         file.write(link)
-        def translate_news(news_text):
+
+
+
+def translate_news(news_text):
 
     try:
 
         result = client.chat.completions.create(
 
-        result = client.chat.completions.create(
+
+        
 
             model="llama-3.3-70b-versatile",
 
