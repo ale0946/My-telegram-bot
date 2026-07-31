@@ -17,6 +17,7 @@ CHANNEL_IDS = [
     "@yegnaLiverpoolET"
 ]
 
+
 NEWS_FILE = "last_news.txt"
 SOURCES_FILE = "sources.txt"
 
@@ -48,11 +49,16 @@ def is_liverpool_news(text):
         "LFC",
         "Anfield",
         "Salah",
+        "Mohamed Salah",
         "Van Dijk",
         "Iraola",
         "Slot",
         "Mac Allister",
-        "Trent"
+        "Trent",
+        "Alexander-Arnold",
+        "Szoboszlai",
+        "Gakpo",
+        "Nunez"
     ]
 
 
@@ -84,7 +90,7 @@ def save_last_news(link):
 
     with open(NEWS_FILE, "w") as file:
         file.write(link)
-def translate_news(news_text):
+        def translate_news(news_text):
 
     try:
 
@@ -95,23 +101,18 @@ def translate_news(news_text):
             messages=[
 
                 {
-    "role": "system",
-    "content": """
-አንተ የሊቨርፑል እግር ኳስ ዜና አርታኢ ነህ።
+                    "role": "system",
+                    "content": """
+አንተ የLiverpool እግር ኳስ ዜና አርታኢ ነህ።
 
-ተግባርህ የተሰጠውን ዜና ወደ ተፈጥሯዊ፣ አጭር እና ሙያዊ አማርኛ መቀየር ነው።
+የተሰጠህን ዜና ወደ ጥሩ፣ አጭር እና ተፈጥሯዊ አማርኛ ቀይር።
 
-ህጎች፦
-- ቃል በቃል አትተርጉም።
-- የዜናውን ትርጉም ብቻ አስቀምጥ፤ ከራስህ መረጃ አትጨምር።
-- የተጫዋች፣ የክለብ እና የአሰልጣኝ ስሞችን አትቀይር።
-- አንድ ቃል ወይም ሐረግ ከአንድ ጊዜ በላይ አትድገም።
-- "ይታወቃል", "ተብሏል", "ሊቨርፑል ክለብ" የመሳሰሉ ቃላትን ያለአስፈላጊነት አትድገም።
-- "ክለቡ", "ተጫዋቹ", "እሱ" የሚሉ ተተኪ ቃላትን በተፈጥሯዊ ሁኔታ ተጠቀም።
-- አረፍተ ነገሮች አጭርና ግልጽ ይሁኑ።
-- HTML tags (<p>, <br>, &nbsp; ...) ካሉ አስወግድ።
-- ውጤቱ 100-180 ቃላት እንጂ ረጅም አይሁን።
-- የመጨረሻው ውጤት በTelegram ለመለጠፍ ዝግጁ ይሁን።
+ህጎች:
+- ከራስህ መረጃ አትጨምር።
+- ስሞችን አትቀይር።
+- የተደጋጋሚ ቃላትን አስወግድ።
+- ለTelegram ዝግጁ የሆነ ጽሑፍ ስራ።
+- አጭርና ግልጽ ይሁን።
 """
                 },
 
@@ -123,7 +124,7 @@ def translate_news(news_text):
             ],
 
             temperature=0.1,
-            max_tokens=1200
+            max_tokens=1000
 
         )
 
@@ -144,22 +145,17 @@ def get_live_matches():
 
     url = "https://v3.football.api-sports.io/fixtures?live=all"
 
-
     headers = {
-
         "x-apisports-key": API_KEY
-
     }
 
 
     try:
 
         response = requests.get(
-
             url,
             headers=headers,
             timeout=10
-
         )
 
 
@@ -171,7 +167,6 @@ def get_live_matches():
 
         for game in data.get("response", []):
 
-
             home = game["teams"]["home"]["name"]
 
             away = game["teams"]["away"]["name"]
@@ -179,21 +174,17 @@ def get_live_matches():
 
             if "Liverpool" in home or "Liverpool" in away:
 
-
                 home_score = game["goals"]["home"]
 
                 away_score = game["goals"]["away"]
 
 
                 matches.append(
-
                     f"⚽ {home} {home_score}-{away_score} {away}"
-
                 )
 
 
         return matches
-
 
 
     except Exception as e:
@@ -201,7 +192,6 @@ def get_live_matches():
         print("Football API error:", e)
 
         return []
-
 
 
 
@@ -217,7 +207,6 @@ def get_image(item):
                 return item.media_content[0]["url"]
 
 
-
         if hasattr(item, "media_thumbnail"):
 
             if item.media_thumbnail:
@@ -231,7 +220,7 @@ def get_image(item):
 
 
     return None
-async def send_news():
+    async def send_news():
 
     old_news = get_last_news()
 
@@ -302,14 +291,16 @@ async def send_news():
 
 
     message = f"""
+🔴 Liverpool News
+
 📝 {translated}
+
 {live_text}
 
 📰 ምንጭ: Liverpool News
 
-📢 @yegnaLiverpool
+📢 @yegnaLiverpoolET
 """
-
 
 
     bot = Bot(token=TOKEN)
@@ -321,29 +312,31 @@ async def send_news():
         image = get_image(latest)
 
 
-       for channel in CHANNEL_IDS:
+        for channel in CHANNEL_IDS:
 
-    if image:
 
-        await bot.send_photo(
+            if image:
 
-            chat_id=channel,
+                await bot.send_photo(
 
-            photo=image,
+                    chat_id=channel,
 
-            caption=message
+                    photo=image,
 
-        )
+                    caption=message
 
-    else:
+                )
 
-        await bot.send_message(
 
-            chat_id=channel,
+            else:
 
-            text=message
+                await bot.send_message(
 
-        ) 
+                    chat_id=channel,
+
+                    text=message
+
+                )
 
 
 
@@ -364,15 +357,11 @@ async def send_news():
 
 async def main():
 
-
     while True:
-
 
         await send_news()
 
-
         print("Waiting 5 minutes...")
-
 
         await asyncio.sleep(300)
 
