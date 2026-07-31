@@ -29,7 +29,9 @@ client = Groq(api_key=GROQ_KEY)
 def get_sources():
 
     try:
+
         with open(SOURCES_FILE, "r") as file:
+
             return [
                 line.strip()
                 for line in file
@@ -37,7 +39,9 @@ def get_sources():
             ]
 
     except Exception as e:
+
         print("Sources error:", e)
+
         return []
 
 
@@ -68,6 +72,7 @@ def is_liverpool_news(text):
     for word in keywords:
 
         if word.lower() in text:
+
             return True
 
 
@@ -80,7 +85,9 @@ def get_last_news():
     if os.path.exists(NEWS_FILE):
 
         with open(NEWS_FILE, "r") as file:
+
             return file.read().strip()
+
 
     return ""
 
@@ -89,6 +96,7 @@ def get_last_news():
 def save_last_news(link):
 
     with open(NEWS_FILE, "w") as file:
+
         file.write(link)
         def translate_news(news_text):
 
@@ -103,16 +111,15 @@ def save_last_news(link):
                 {
                     "role": "system",
                     "content": """
-አንተ የLiverpool እግር ኳስ ዜና አርታኢ ነህ።
+አንተ የLiverpool ዜና አርታኢ ነህ።
 
-የተሰጠህን ዜና ወደ ጥሩ፣ አጭር እና ተፈጥሯዊ አማርኛ ቀይር።
+የተሰጠህን ዜና ወደ ተፈጥሯዊ፣ አጭር እና ግልጽ አማርኛ ቀይር።
 
 ህጎች:
 - ከራስህ መረጃ አትጨምር።
-- ስሞችን አትቀይር።
+- የተጫዋች እና ክለብ ስሞችን አትቀይር።
 - የተደጋጋሚ ቃላትን አስወግድ።
-- ለTelegram ዝግጁ የሆነ ጽሑፍ ስራ።
-- አጭርና ግልጽ ይሁን።
+- ለTelegram የሚሆን ጽሑፍ አዘጋጅ።
 """
                 },
 
@@ -125,7 +132,6 @@ def save_last_news(link):
 
             temperature=0.1,
             max_tokens=1000
-
         )
 
 
@@ -145,17 +151,24 @@ def get_live_matches():
 
     url = "https://v3.football.api-sports.io/fixtures?live=all"
 
+
     headers = {
+
         "x-apisports-key": API_KEY
+
     }
 
 
     try:
 
         response = requests.get(
+
             url,
+
             headers=headers,
+
             timeout=10
+
         )
 
 
@@ -167,6 +180,7 @@ def get_live_matches():
 
         for game in data.get("response", []):
 
+
             home = game["teams"]["home"]["name"]
 
             away = game["teams"]["away"]["name"]
@@ -174,13 +188,16 @@ def get_live_matches():
 
             if "Liverpool" in home or "Liverpool" in away:
 
+
                 home_score = game["goals"]["home"]
 
                 away_score = game["goals"]["away"]
 
 
                 matches.append(
+
                     f"⚽ {home} {home_score}-{away_score} {away}"
+
                 )
 
 
@@ -235,6 +252,7 @@ def get_image(item):
         for item in feed.entries:
 
             if item.link == old_news:
+
                 continue
 
 
@@ -249,10 +267,12 @@ def get_image(item):
             if is_liverpool_news(content):
 
                 latest = item
+
                 break
 
 
         if latest:
+
             break
 
 
@@ -291,15 +311,11 @@ def get_image(item):
 
 
     message = f"""
-🔴 Liverpool News
-
 📝 {translated}
 
 {live_text}
 
 📰 ምንጭ: Liverpool News
-
-📢 @yegnaLiverpoolET
 """
 
 
@@ -337,7 +353,6 @@ def get_image(item):
                     text=message
 
                 )
-
 
 
         save_last_news(latest.link)
