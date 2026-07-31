@@ -106,6 +106,18 @@ async def send_news():
 
 
     live = get_live_matches()
+    def get_image(item):
+    try:
+        if "media_content" in item:
+            return item.media_content[0]["url"]
+
+        if "media_thumbnail" in item:
+            return item.media_thumbnail[0]["url"]
+
+    except:
+        pass
+
+    return None
 
     if live:
         live_text = "\n".join(live)
@@ -129,6 +141,15 @@ async def send_news():
 
     bot = Bot(token=TOKEN)
 
+    image = get_image(latest)
+
+if image:
+    await bot.send_photo(
+        chat_id=CHANNEL_ID,
+        photo=image,
+        caption=text
+    )
+else:
     await bot.send_message(
         chat_id=CHANNEL_ID,
         text=text
