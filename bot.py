@@ -68,6 +68,9 @@ def translate_news(news_text):
 - የዜናውን ትርጉም አትቀይር
 - ከእንግሊዝኛ ርዕስ የሚመጡ የተሳሳቱ ቃላትን አስተካክል
 - እንደ የሊቨርፑል ይፋዊ ዜና ገጽ ቅርጽ አቅርብ
+- ዜናውን በቂ ዝርዝር አቅርብ
+- 2 እስከ 4 አንቀጽ ያለ የስፖርት ዘገባ ጻፍ
+- ዋና ዋና ነጥቦችን አትተው
 """
                 },
                 {
@@ -76,7 +79,7 @@ def translate_news(news_text):
                 }
             ],
             temperature=0.2,
-            max_tokens=300
+            max_tokens=1200
         )
 
         return result.choices[0].message.content.strip()
