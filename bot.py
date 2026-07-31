@@ -2,6 +2,7 @@ import os
 import asyncio
 import requests
 import feedparser
+
 from telegram import Bot
 from groq import Groq
 
@@ -89,6 +90,9 @@ def get_last_news():
 
 
     return ""
+
+
+
 def save_last_news(link):
 
     with open(NEWS_FILE, "w") as file:
@@ -103,9 +107,6 @@ def translate_news(news_text):
 
         result = client.chat.completions.create(
 
-
-        
-
             model="llama-3.3-70b-versatile",
 
             messages=[
@@ -113,15 +114,12 @@ def translate_news(news_text):
                 {
                     "role": "system",
                     "content": """
-አንተ የLiverpool ዜና አርታኢ ነህ።
-
-የተሰጠህን ዜና ወደ ተፈጥሯዊ፣ አጭር እና ግልጽ አማርኛ ቀይር።
+የLiverpool ዜናን ወደ ተፈጥሯዊ እና አጭር አማርኛ ቀይር።
 
 ህጎች:
 - ከራስህ መረጃ አትጨምር።
-- የተጫዋች እና ክለብ ስሞችን አትቀይር።
-- የተደጋጋሚ ቃላትን አስወግድ።
-- ለTelegram የሚሆን ጽሑፍ አዘጋጅ።
+- የተጫዋች ስሞችን አትቀይር።
+- ለTelegram ልጥፍ ዝግጁ አድርግ።
 """
                 },
 
@@ -145,43 +143,30 @@ def translate_news(news_text):
         print("Groq error:", e)
 
         return news_text
-
-
-
-
 def get_live_matches():
 
     url = "https://v3.football.api-sports.io/fixtures?live=all"
 
-
     headers = {
-
         "x-apisports-key": API_KEY
-
     }
 
 
     try:
 
         response = requests.get(
-
             url,
-
             headers=headers,
-
             timeout=10
-
         )
 
 
         data = response.json()
 
-
         matches = []
 
 
         for game in data.get("response", []):
-
 
             home = game["teams"]["home"]["name"]
 
@@ -190,16 +175,8 @@ def get_live_matches():
 
             if "Liverpool" in home or "Liverpool" in away:
 
-
-                home_score = game["goals"]["home"]
-
-                away_score = game["goals"]["away"]
-
-
                 matches.append(
-
-                    f"⚽ {home} {home_score}-{away_score} {away}"
-
+                    f"⚽ {home} {game['goals']['home']}-{game['goals']['away']} {away}"
                 )
 
 
@@ -211,6 +188,7 @@ def get_live_matches():
         print("Football API error:", e)
 
         return []
+
 
 
 
@@ -239,7 +217,12 @@ def get_image(item):
 
 
     return None
-    async def send_news():
+
+
+
+
+
+async def send_news():
 
     old_news = get_last_news()
 
@@ -299,7 +282,6 @@ def get_image(item):
     translated = translate_news(news_text)
 
 
-
     live = get_live_matches()
 
 
@@ -313,16 +295,13 @@ def get_image(item):
 
 
     message = f"""
-📝 {translated}
+{translated}
 
 {live_text}
-
-📰 ምንጭ: Liverpool News
 """
 
 
     bot = Bot(token=TOKEN)
-
 
 
     try:
@@ -332,28 +311,19 @@ def get_image(item):
 
         for channel in CHANNEL_IDS:
 
-
             if image:
 
                 await bot.send_photo(
-
                     chat_id=channel,
-
                     photo=image,
-
                     caption=message
-
                 )
-
 
             else:
 
                 await bot.send_message(
-
                     chat_id=channel,
-
                     text=message
-
                 )
 
 
@@ -361,7 +331,6 @@ def get_image(item):
 
 
         print("News sent successfully")
-
 
 
     except Exception as e:
@@ -388,4 +357,4 @@ async def main():
 
 if __name__ == "__main__":
 
-    asyncio.run(main())
+    asyncio.run(main())        
