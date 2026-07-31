@@ -149,7 +149,6 @@ async def send_news():
 📢 @yegnaLiverpool
 
 """
-"""
 
 
     bot = Bot(token=TOKEN)
