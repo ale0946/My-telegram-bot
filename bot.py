@@ -2,7 +2,6 @@ import os
 import asyncio
 import requests
 import feedparser
-
 from telegram import Bot
 from groq import Groq
 
