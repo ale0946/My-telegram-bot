@@ -321,7 +321,7 @@ async def send_news():
         image = get_image(latest)
 
 
-        for channel in CHANNEL_IDS:
+       for channel in CHANNEL_IDS:
 
     if image:
 
@@ -343,7 +343,7 @@ async def send_news():
 
             text=message
 
-        )
+        ) 
 
 
 
