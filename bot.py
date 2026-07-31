@@ -139,16 +139,16 @@ async def send_news():
 
 
     text = f"""
-🚨🔴 የሊቨርፑል ዜና
 
 📝 {translated}
 
-⚽ Live:
 {live_text}
 
 📰 ምንጭ: Liverpool News
 
 📢 @yegnaLiverpool
+
+"""
 """
 
 
