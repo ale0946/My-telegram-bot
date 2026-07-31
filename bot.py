@@ -119,7 +119,7 @@ def translate_news(news_text):
 
             ],
 
-            temperature=0.1
+            temperature=0.1,
             max_tokens=1200
 
         )
