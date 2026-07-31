@@ -2,7 +2,7 @@ import os
 import requests
 import feedparser
 import asyncio
-from telegram import Bot
+from telegram.constants import ParseMode
 from groq import Groq
 
 TOKEN = os.getenv("BOT_TOKEN")
