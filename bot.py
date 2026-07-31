@@ -155,10 +155,12 @@ async def send_news():
     live = get_live_matches()
 
 
+        live = get_live_matches()
+
     if live:
-    live_text = "\n".join(live)
-else:
-    live_text = ""
+        live_text = "\n".join(live)
+    else:
+        live_text = ""
 
 
     text = f"""
