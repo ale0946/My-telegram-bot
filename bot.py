@@ -104,6 +104,8 @@ def save_last_news(link):
 
         result = client.chat.completions.create(
 
+        result = client.chat.completions.create(
+
             model="llama-3.3-70b-versatile",
 
             messages=[
