@@ -102,15 +102,12 @@ def get_live_matches():
     except Exception as e:
         print("Football API Error:", e)
         return[] 
-    def get_image(item):
-        try:
-
+def get_image(item):
+    try:
         if hasattr(item, "media_content"):
-            return item.media_content[0]["url"]
-
-        if hasattr(item, "media_thumbnail"):
-            return item.media_thumbnail[0]["url"]
-
+            media = item.media_content
+            if media:
+                return media[0]["url"]
     except Exception:
         pass
 
