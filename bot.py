@@ -21,8 +21,28 @@ client = Groq(api_key=GROQ_KEY)
 
 
 def get_sources():
-    with open(SOURCES_FILE, "r") as f:
-        return [line.strip() for line in f if line.strip()]
+    try:
+        with open(SOURCES_FILE, "r") as f:
+            return [line.strip() for line in f if line.strip()]
+    except Exception as e:
+        print("Sources Error:", e)
+        return []
+
+
+def is_liverpool_news(text):
+    keywords = [
+        "Liverpool",
+        "LFC",
+        "Anfield",
+        "Slot",
+        "Iraola",
+        "Van Dijk",
+        "Salah",
+        "Trent",
+        "Mac Allister"
+    ]
+
+    return any(word.lower() in text.lower() for word in keywords)
 
 
 def translate_news(news_text):
@@ -33,15 +53,15 @@ def translate_news(news_text):
                 {
                     "role": "system",
                     "content": """
-አንተ የሊቨርፑል እግር ኳስ ዜና አርታኢ ነህ።
+አንተ የሊቨርፑል የእግር ኳስ ዜና አርታኢ ነህ።
 
-የተሰጠውን ዜና ወደ ተፈጥሯዊ አማርኛ ቀይር።
+ይህን ዜና ወደ ተፈጥሯዊ አማርኛ ቀይር።
 
 ህጎች:
+- እንደ ስፖርት ጋዜጠኛ ጻፍ
 - ቃል በቃል አትተርጉም
-- እንደ የስፖርት ጋዜጠኛ ጻፍ
 - ከዜናው ውጪ መረጃ አትጨምር
-- የተጫዋቾች እና ክለቦች ስም አትቀይር
+- የተጫዋች እና ክለብ ስም አትቀይር
 - አጭርና ግልጽ አድርግ
 """
                 },
@@ -98,28 +118,39 @@ def get_live_matches():
 
     except Exception as e:
         print("Football API Error:", e)
-        return []
-
-
+        return [] 
 def get_image(item):
     try:
         if hasattr(item, "media_content"):
+
             media = item.media_content
 
             if media:
                 return media[0]["url"]
 
+        if hasattr(item, "media_thumbnail"):
+
+            thumb = item.media_thumbnail
+
+            if thumb:
+                return thumb[0]["url"]
+
     except Exception as e:
         print("Image Error:", e)
 
     return None
+
+
+
 async def send_news():
 
     old_news = ""
 
     if os.path.exists(FILE):
+
         with open(FILE, "r") as f:
             old_news = f.read().strip()
+
 
 
     latest = None
@@ -129,43 +160,66 @@ async def send_news():
 
         news = feedparser.parse(source)
 
+
         if news.entries:
 
-            item = news.entries[0]
+            for item in news.entries:
 
-            if item.link != old_news:
-                latest = item
-                break
+                if item.link != old_news:
+
+                    content = item.title
+
+                    if hasattr(item, "summary"):
+                        content += " " + item.summary
+
+
+                    if is_liverpool_news(content):
+
+                        latest = item
+                        break
+
+
+        if latest:
+            break
+
 
 
     if not latest:
-        print("No new news")
+
+        print("No new Liverpool news")
+
         return
+
 
 
     news_text = latest.title
 
+
     if hasattr(latest, "summary"):
+
         news_text += "\n\n" + latest.summary
+
 
 
     translated = translate_news(news_text)
 
 
+
     live = get_live_matches()
 
 
-        live = get_live_matches()
+    live_text = ""
 
     if live:
-        live_text = "\n".join(live)
-    else:
-        live_text = ""
+
+        live_text = "\n\n" + "\n".join(live)
+
 
 
     text = f"""
-📝 {translated}
+🔴 Liverpool News
 
+📝 {translated}
 {live_text}
 
 📰 ምንጭ: Liverpool News
@@ -174,13 +228,16 @@ async def send_news():
 """
 
 
+
     bot = Bot(token=TOKEN)
 
 
-    image = get_image(latest)
-
 
     try:
+
+        image = get_image(latest)
+
+
 
         if image:
 
@@ -198,15 +255,22 @@ async def send_news():
             )
 
 
+
         with open(FILE, "w") as f:
+
             f.write(latest.link)
+
 
 
         print("News sent successfully")
 
 
+
     except Exception as e:
+
         print("Telegram Error:", e)
+
+
 
 
 
