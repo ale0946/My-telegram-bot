@@ -282,6 +282,18 @@ async def send_news():
 
 
 
+async def main():
+
+    while True:
+
+        await send_news()
+
+        print("Waiting 5 minutes...")
+
+        await asyncio.sleep(300)
+
+
+
 if __name__ == "__main__":
 
-    asyncio.run(send_news())
+    asyncio.run(main())
