@@ -1,4 +1,4 @@
-import os
+  import os
 import requests
 import feedparser
 import asyncio
@@ -61,18 +61,24 @@ def translate_news(news_text):
     except Exception as e:
         print("Groq Error:", e)
         return news_text
-    def get_live_matches():
+
+
+
+def get_live_matches():
 
     url = "https://v3.football.api-sports.io/fixtures?live=all"
-
-
 
     headers = {
         "x-apisports-key": API_KEY
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
         data = response.json()
 
         matches = []
@@ -95,11 +101,7 @@ def translate_news(news_text):
 
     except Exception as e:
         print("Football API Error:", e)
-        return []
-
-
-
-def get_image(item):
+        return [] def get_image(item):
     try:
 
         if hasattr(item, "media_content"):
@@ -178,6 +180,7 @@ async def send_news():
 """
 
 
+
     bot = Bot(token=TOKEN)
 
 
@@ -209,4 +212,5 @@ async def send_news():
 
 
 if __name__ == "__main__":
-    asyncio.run(send_news())       
+
+    asyncio.run(send_news())
