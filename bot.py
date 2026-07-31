@@ -1,4 +1,4 @@
-import os
+  import os
 import requests
 import feedparser
 import asyncio
@@ -20,11 +20,9 @@ SOURCES_FILE = "sources.txt"
 client = Groq(api_key=GROQ_KEY)
 
 
-
 def get_sources():
     with open(SOURCES_FILE, "r") as f:
         return [line.strip() for line in f if line.strip()]
-
 
 
 def translate_news(news_text):
@@ -61,7 +59,6 @@ def translate_news(news_text):
     except Exception as e:
         print("Groq Error:", e)
         return news_text
-
 
 
 def get_live_matches():
@@ -101,20 +98,21 @@ def get_live_matches():
 
     except Exception as e:
         print("Football API Error:", e)
-        return[] 
+        return []
+
+
 def get_image(item):
     try:
         if hasattr(item, "media_content"):
             media = item.media_content
+
             if media:
                 return media[0]["url"]
-    except Exception:
-        pass
+
+    except Exception as e:
+        print("Image Error:", e)
 
     return None
-
-
-
 async def send_news():
 
     old_news = ""
@@ -145,7 +143,6 @@ async def send_news():
         return
 
 
-
     news_text = latest.title
 
     if hasattr(latest, "summary"):
@@ -155,16 +152,13 @@ async def send_news():
     translated = translate_news(news_text)
 
 
-
     live = get_live_matches()
 
 
     if live:
         live_text = "\n".join(live)
-
     else:
         live_text = "⚽ አሁን የሊቨርፑል ቀጥታ ጨዋታ የለም"
-
 
 
     text = f"""
@@ -178,34 +172,39 @@ async def send_news():
 """
 
 
-
     bot = Bot(token=TOKEN)
 
 
     image = get_image(latest)
 
 
-    if image:
+    try:
 
-        await bot.send_photo(
-            chat_id=CHANNEL_ID,
-            photo=image,
-            caption=text
-        )
+        if image:
 
-    else:
+            await bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=image,
+                caption=text
+            )
 
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=text
-        )
+        else:
 
-
-    with open(FILE, "w") as f:
-        f.write(latest.link)
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=text
+            )
 
 
-    print("News sent successfully")
+        with open(FILE, "w") as f:
+            f.write(latest.link)
+
+
+        print("News sent successfully")
+
+
+    except Exception as e:
+        print("Telegram Error:", e)
 
 
 
