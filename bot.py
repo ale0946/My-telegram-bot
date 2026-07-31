@@ -12,7 +12,10 @@ GROQ_KEY = os.getenv("GROQ_API_KEY")
 API_KEY = os.getenv("FOOTBALL_API_KEY")
 
 
-CHANNEL_ID = "@yegnaLiverpool"
+CHANNEL_IDS = [
+    "@yegnaLiverpool",
+    "@yegnaLiverpoolET"
+]
 
 NEWS_FILE = "last_news.txt"
 SOURCES_FILE = "sources.txt"
