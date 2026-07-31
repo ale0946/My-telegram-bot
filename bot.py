@@ -156,9 +156,9 @@ async def send_news():
 
 
     if live:
-        live_text = "\n".join(live)
-    else:
-        live_text = "⚽ አሁን የሊቨርፑል ቀጥታ ጨዋታ የለም"
+    live_text = "\n".join(live)
+else:
+    live_text = ""
 
 
     text = f"""
