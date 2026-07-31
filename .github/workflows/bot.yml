@@ -24,7 +24,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run bot
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        run: |
-          python bot.py
+  env:
+    BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+    FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
+    GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  run: |
+    python bot.py
