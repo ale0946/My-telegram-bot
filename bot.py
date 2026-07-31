@@ -321,28 +321,29 @@ async def send_news():
         image = get_image(latest)
 
 
-        if image:
+        for channel in CHANNEL_IDS:
 
-            await bot.send_photo(
+    if image:
 
-                chat_id=CHANNEL_ID,
+        await bot.send_photo(
 
-                photo=image,
+            chat_id=channel,
 
-                caption=message
+            photo=image,
 
-            )
+            caption=message
 
+        )
 
-        else:
+    else:
 
-            await bot.send_message(
+        await bot.send_message(
 
-                chat_id=CHANNEL_ID,
+            chat_id=channel,
 
-                text=message
+            text=message
 
-            )
+        )
 
 
 
