@@ -149,7 +149,7 @@ if not BOT_TOKEN:
     logger.error("BOT_TOKEN is missing.")
 
 if not GROQ_API_KEY:
-    logger.error("GROQ_API_KEY is missing."
+ logger.error("GROQ_API_KEY is missing.")
 
 # =========================================================
 # FILE HELPERS
