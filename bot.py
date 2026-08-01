@@ -21,12 +21,16 @@ CHANNEL_ID = "@yegnaLiverpool"
 
 NEWS_FILE = "posted_news.json"
 
-# የቆየ ዜና ከዚህ በላይ ከሆነ አንልክም
+# ከ24 ሰዓት በላይ የቆየ ዜና አይላክም
 MAX_NEWS_AGE_HOURS = 24
 
-# ዜናን ለመፈተሽ የሚደገምበት ጊዜ
-CHECK_INTERVAL = 300  # 5 minutes
+# በየ5 ደቂቃው ዜና ይፈትሻል
+CHECK_INTERVAL = 300
 
+
+# =========================================================
+# CHECK ENVIRONMENT
+# =========================================================
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN አልተገኘም።")
@@ -35,8 +39,15 @@ if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY አልተገኘም።")
 
 
+# =========================================================
+# CLIENTS
+# =========================================================
+
 bot = Bot(token=BOT_TOKEN)
-groq = Groq(api_key=GROQ_API_KEY)
+
+groq = Groq(
+    api_key=GROQ_API_KEY
+)
 
 
 # =========================================================
@@ -72,8 +83,9 @@ RSS_FEEDS = [
     },
 ]
 
+
 # =========================================================
-# FILE / HISTORY
+# NEWS HISTORY
 # =========================================================
 
 def load_posted_news():
@@ -81,7 +93,11 @@ def load_posted_news():
         return []
 
     try:
-        with open(NEWS_FILE, "r", encoding="utf-8") as f:
+        with open(
+            NEWS_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
             data = json.load(f)
 
         if isinstance(data, list):
@@ -89,7 +105,10 @@ def load_posted_news():
 
         return []
 
-    except Exception:
+    except Exception as e:
+        print(
+            f"History load error: {e}"
+        )
         return []
 
 
@@ -97,12 +116,22 @@ def save_posted_news(data):
     # 500 የመጨረሻ ዜናዎችን ብቻ እንይዛለን
     data = data[-500:]
 
-    with open(NEWS_FILE, "w", encoding="utf-8") as f:
-        json.dump(
-            data,
-            f,
-            ensure_ascii=False,
-            indent=2
+    try:
+        with open(
+            NEWS_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+            json.dump(
+                data,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+
+    except Exception as e:
+        print(
+            f"History save error: {e}"
         )
 
 
@@ -118,7 +147,12 @@ def normalize_text(text):
         return ""
 
     text = text.lower().strip()
-    text = re.sub(r"\s+", " ", text)
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
     return text
 
@@ -131,18 +165,26 @@ def make_hash(text):
     ).hexdigest()
 
 
+# =========================================================
+# DUPLICATE CHECK
+# =========================================================
+
 def is_duplicate(title, summary):
     global posted_news
 
     title_hash = make_hash(title)
 
-    # 1. በትክክል የተመዘገበ title
+    # Exact duplicate
     for item in posted_news:
         if item.get("title_hash") == title_hash:
             return True
 
-    # 2. በጣም ተመሳሳይ title
+    # Similar title duplicate
     new_title = normalize_text(title)
+
+    new_words = set(
+        new_title.split()
+    )
 
     for item in posted_news:
         old_title = normalize_text(
@@ -152,26 +194,42 @@ def is_duplicate(title, summary):
         if not old_title:
             continue
 
-        # ቀላል similarity
-        new_words = set(new_title.split())
-        old_words = set(old_title.split())
+        old_words = set(
+            old_title.split()
+        )
 
-        if len(new_words) >= 4 and len(old_words) >= 4:
+        if (
+            len(new_words) >= 4
+            and len(old_words) >= 4
+        ):
             intersection = len(
-                new_words.intersection(old_words)
+                new_words.intersection(
+                    old_words
+                )
             )
 
             union = len(
-                new_words.union(old_words)
+                new_words.union(
+                    old_words
+                )
             )
 
-            similarity = intersection / union
+            if union == 0:
+                continue
+
+            similarity = (
+                intersection / union
+            )
 
             if similarity >= 0.70:
                 return True
 
     return False
 
+
+# =========================================================
+# REMEMBER POSTED NEWS
+# =========================================================
 
 def remember_news(title, link):
     global posted_news
@@ -187,48 +245,70 @@ def remember_news(title, link):
         }
     )
 
-    save_posted_news(posted_news)
+    save_posted_news(
+        posted_news
+    )
 
 
 # =========================================================
-# DATE CHECK
+# DATE HELPERS
 # =========================================================
 
 def get_entry_datetime(entry):
     try:
-        if getattr(entry, "published_parsed", None):
+        if getattr(
+            entry,
+            "published_parsed",
+            None
+        ):
             return datetime(
                 *entry.published_parsed[:6],
                 tzinfo=timezone.utc
             )
 
-        if getattr(entry, "updated_parsed", None):
+        if getattr(
+            entry,
+            "updated_parsed",
+            None
+        ):
             return datetime(
                 *entry.updated_parsed[:6],
                 tzinfo=timezone.utc
             )
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(
+            f"Date parsing error: {e}"
+        )
 
     return None
 
 
 def is_recent(entry):
-    published = get_entry_datetime(entry)
+    published = get_entry_datetime(
+        entry
+    )
 
-    # Date ካልተገኘ በቀጥታ አንቀበልም
+    # Date ካልተገኘ አንቀበልም
     if not published:
         return False
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(
+        timezone.utc
+    )
 
     age = now - published
 
-    if age < timedelta(minutes=-10):
+    # Future date ካለ
+    if age < timedelta(
+        minutes=-10
+    ):
         return False
 
-    if age > timedelta(hours=MAX_NEWS_AGE_HOURS):
+    # ከ24 ሰዓት በላይ ከሆነ
+    if age > timedelta(
+        hours=MAX_NEWS_AGE_HOURS
+    ):
         return False
 
     return True
@@ -256,7 +336,10 @@ LIVERPOOL_KEYWORDS = [
 ]
 
 
-def is_liverpool_news(title, summary):
+def is_liverpool_news(
+    title,
+    summary
+):
     text = normalize_text(
         f"{title} {summary}"
     )
@@ -269,7 +352,7 @@ def is_liverpool_news(title, summary):
 
 
 # =========================================================
-# RSS FETCH
+# FETCH NEWS
 # =========================================================
 
 def fetch_news():
@@ -277,6 +360,11 @@ def fetch_news():
 
     for source in RSS_FEEDS:
         try:
+            print(
+                f"🔎 Checking: "
+                f"{source['name']}"
+            )
+
             feed = feedparser.parse(
                 source["url"]
             )
@@ -301,23 +389,29 @@ def fetch_news():
                 if not title or not link:
                     continue
 
-                # ቆይቷል?
+                # የቆየ ዜና አይገባም
                 if not is_recent(entry):
                     continue
 
-                # Liverpool ነው?
+                # Liverpool ዜና ብቻ
                 if not is_liverpool_news(
                     title,
                     summary
                 ):
                     continue
 
-                # Duplicate ነው?
+                # Duplicate ከሆነ አይገባም
                 if is_duplicate(
                     title,
                     summary
                 ):
                     continue
+
+                published = (
+                    get_entry_datetime(
+                        entry
+                    )
+                )
 
                 all_news.append(
                     {
@@ -325,23 +419,24 @@ def fetch_news():
                         "summary": summary,
                         "link": link,
                         "source": source["name"],
-                        "published": get_entry_datetime(
-                            entry
-                        )
+                        "published": published
                     }
                 )
 
         except Exception as e:
             print(
-                f"RSS error - {source['name']}: {e}"
+                f"RSS error - "
+                f"{source['name']}: {e}"
             )
 
-    # አዲሱን በመጀመሪያ
+    # አዲሱን ዜና በመጀመሪያ
     all_news.sort(
-        key=lambda x: x["published"]
-        if x["published"]
-        else datetime.min.replace(
-            tzinfo=timezone.utc
+        key=lambda x: (
+            x["published"]
+            if x["published"]
+            else datetime.min.replace(
+                tzinfo=timezone.utc
+            )
         ),
         reverse=True
     )
@@ -354,14 +449,17 @@ def fetch_news():
 # =========================================================
 
 def create_amharic_news(news):
+
     title = news["title"]
+
     summary = news["summary"]
 
     prompt = f"""
-አንተ የLiverpool FC የአማርኛ ዜና አዘጋጅ ነህ።
+አንተ የLiverpool FC የአማርኛ
+ዜና አዘጋጅ ነህ።
 
 ከታች ያለውን ዜና ተጠቅመህ
-Telegram ላይ ለመለጠፍ ተፈጥሯዊ,
+Telegram ላይ ለመለጠፍ ተፈጥሯዊ፣
 ግልጽ እና አጭር የአማርኛ ዜና አዘጋጅ።
 
 IMPORTANT:
@@ -370,9 +468,11 @@ IMPORTANT:
 - English paragraph አታስገባ።
 - የሌለውን መረጃ አትፍጠር።
 - የዜናውን ትርጉም አትቀይር።
-- ከርዕሱ እና ከsummary የተረጋገጠውን ብቻ ተጠቀም።
+- ከርዕሱ እና summary የተረጋገጠውን
+  ብቻ ተጠቀም።
 - ከ2-4 አጭር አንቀጾች ይሁን።
 - የሚያስፈልግ ከሆነ 🔴⚽📰 ተጠቀም።
+- Source እና ORIGINAL TITLE አታሳይ።
 
 FORMAT:
 
@@ -382,7 +482,8 @@ FORMAT:
 
 [የአማርኛ ዜና]
 
-Source: {news['source']}
+የዜናው ምንጭ:
+{news['source']}
 
 ORIGINAL TITLE:
 {title}
@@ -399,7 +500,8 @@ SUMMARY:
                     "role": "system",
                     "content": (
                         "You are a professional "
-                        "Amharic Liverpool FC news editor."
+                        "Amharic Liverpool FC "
+                        "news editor."
                     )
                 },
                 {
@@ -411,7 +513,13 @@ SUMMARY:
             max_tokens=700
         )
 
-        result = response.choices[0].message.content.strip()
+        result = (
+            response
+            .choices[0]
+            .message
+            .content
+            .strip()
+        )
 
         if not result:
             return None
@@ -419,18 +527,33 @@ SUMMARY:
         return result
 
     except Exception as e:
-        print(f"Groq error: {e}")
+        print(
+            f"Groq error: {e}"
+        )
+
         return None
 
 
 # =========================================================
-# SEND TELEGRAM
+# SEND NEWS TO TELEGRAM
 # =========================================================
 
 async def send_news(news):
-    text = create_amharic_news(news)
+
+    print(
+        f"📝 Preparing: "
+        f"{news['title']}"
+    )
+
+    text = create_amharic_news(
+        news
+    )
 
     if not text:
+        print(
+            "❌ Groq returned no text."
+        )
+
         return False
 
     try:
@@ -446,14 +569,15 @@ async def send_news(news):
         )
 
         print(
-            f"POSTED: {news['title']}"
+            f"✅ POSTED: "
+            f"{news['title']}"
         )
 
         return True
 
     except Exception as e:
         print(
-            f"Telegram error: {e}"
+            f"❌ Telegram error: {e}"
         )
 
         return False
@@ -464,37 +588,58 @@ async def send_news(news):
 # =========================================================
 
 async def news_loop():
-    print("🔴 Liverpool News Bot started!")
+
+    print(
+        "🔴 Liverpool News Bot started!"
+    )
 
     while True:
 
         try:
+
             news_list = fetch_news()
 
             print(
-                f"New eligible news: "
+                f"📰 New eligible news: "
                 f"{len(news_list)}"
             )
 
-            # በአንድ check አንድ ዜና ብቻ
-            # እንዳይጨናነቅ Telegram
-                if news_list:
-                print(f"📰 Sending: {news_list[0]['title']}")
+            # አዲስ ዜና ካለ
+            if news_list:
 
-                success = await send_news(news_list[0])
+                print(
+                    f"📰 Sending: "
+                    f"{news_list[0]['title']}"
+                )
+
+                success = await send_news(
+                    news_list[0]
+                )
 
                 if success:
-                    print("✅ News sent to Telegram!")
+
+                    print(
+                        "✅ News sent to Telegram!"
+                    )
+
                 else:
-                    print("❌ Failed to send news to Telegram!")
+
+                    print(
+                        "❌ Failed to send news "
+                        "to Telegram!"
+                    )
 
             else:
-                print("⏭️ No new Liverpool news found.")
-else:
-    print("⏭️ No new Liverpool news found.")
+
+                print(
+                    "⏭️ No new Liverpool "
+                    "news found."
+                )
+
         except Exception as e:
+
             print(
-                f"Main loop error: {e}"
+                f"❌ Main loop error: {e}"
             )
 
         await asyncio.sleep(
@@ -507,6 +652,7 @@ else:
 # =========================================================
 
 if __name__ == "__main__":
+
     asyncio.run(
         news_loop()
     )
