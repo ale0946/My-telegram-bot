@@ -699,3 +699,206 @@ def valid_amharic(text):
         return False
 
     return True
+# =========================================================
+# GROQ - AMHARIC NEWS WRITER
+# =========================================================
+
+def translate_news_sync(item):
+
+    prompt = f"""
+አንተ የLiverpool FC የአማርኛ ስፖርት
+ጋዜጠኛ ነህ።
+
+ከታች የተሰጠውን ዜና በተፈጥሯዊ፣
+ግልጽ እና ትክክለኛ የኢትዮጵያ
+አማርኛ አዘጋጅ።
+
+ጥብቅ ህጎች:
+
+1. ርዕሱ በአማርኛ ይሁን።
+2. ዋናው ዜና በአማርኛ ይሁን።
+3. English headline አትተው።
+4. English paragraph አትተው።
+5. የተጫዋች ስም እና የክለብ ስም
+   English ሊቀሩ ይችላሉ።
+6. ዋጋ፣ ቁጥር፣ ቀን እና እውነታ
+   አትቀይር።
+7. ያልተሰጠህን መረጃ አትፍጠር።
+8. የዝውውር ወሬ ከሆነ ወሬ መሆኑን
+   በግልጽ አሳይ።
+9. ዜናውን አታሳጥር።
+10. ተመሳሳይ ሀሳብ አትድገም።
+11. Markdown አትጠቀም።
+12. ===== ወይም ----- ወይም ____ የሚል
+    separator አትጠቀም።
+13. የምንጩን ስም አትቀይር።
+
+የመልስ ቅርጽ:
+
+ርዕስ:
+[አማርኛ ርዕስ]
+
+ዜና:
+[ሙሉ እና በቂ የሆነ አማርኛ ዜና]
+
+ምንጭ:
+[{item["source"]}]
+
+የመጀመሪያው ርዕስ:
+{item["title"]}
+
+የመጀመሪያው ይዘት:
+{item["summary"]}
+"""
+
+    try:
+
+        result = groq.chat.completions.create(
+
+            model="openai/gpt-oss-120b",
+
+            messages=[
+
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an Ethiopian Amharic "
+                        "Liverpool football journalist. "
+                        "Write natural Ethiopian Amharic."
+                    )
+                },
+
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+
+            ],
+
+            temperature=0.10,
+
+            max_tokens=1800
+        )
+
+        text = (
+            result
+            .choices[0]
+            .message
+            .content
+            .strip()
+        )
+
+        text = clean_ai_output(
+            text
+        )
+
+        if valid_amharic(text):
+
+            return text
+
+        logger.warning(
+            "AI output was not sufficiently Amharic."
+        )
+
+        return None
+
+    except Exception as error:
+
+        logger.error(
+            "Groq translation error: %s",
+            error
+        )
+
+        return None
+
+
+async def translate_news(item):
+
+    return await asyncio.to_thread(
+        translate_news_sync,
+        item
+    )
+# =========================================================
+# TELEGRAM MESSAGE
+# =========================================================
+
+def make_message(news, link, source):
+
+    news = clean_ai_output(news)
+
+    safe_news = html.escape(news)
+
+    safe_link = html.escape(
+        link,
+        quote=True
+    )
+
+    safe_source = html.escape(
+        source
+    )
+
+    return (
+        "🔴 <b>LIVERPOOL NEWS</b>\n\n"
+        f"{safe_news}\n\n"
+        f"📰 <b>ምንጭ:</b> {safe_source}\n\n"
+        f"🔗 <a href=\"{safe_link}\">"
+        "የዋናውን ዜና ይመልከቱ"
+        "</a>\n\n"
+        "🔴 <b>YN Liverpool</b>"
+    )
+
+
+# =========================================================
+# SEND NEWS TO TELEGRAM
+# =========================================================
+
+async def send_news(item):
+
+    global sent_times
+
+    news = await translate_news(item)
+
+    if not news:
+
+        logger.error(
+            "Amharic translation failed."
+        )
+
+        return False
+
+    message = make_message(
+        news,
+        item["link"],
+        item["source"]
+    )
+
+    try:
+
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=message,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=False
+        )
+
+        logger.info(
+            "✅ News sent to Telegram: %s",
+            item["title"]
+        )
+
+        seen_news.add(
+            item["id"]
+        )
+
+        save_json_list(
+            SEEN_FILE,
+            seen_news
+        )
+
+        sent_times.append(
+            time.time()
+        )
+
+        save_json_list(
+            SENT_TIMES_FILE,
+            sent    
