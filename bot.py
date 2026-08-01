@@ -1,26 +1,26 @@
 import os
 import asyncio
-import re
-import html
 import requests
-import feedparser
+import hashlib
+import re
 
 from telegram import Bot
 from groq import Groq
 
 
-# =========================
+# =========================================================
 # ENVIRONMENT VARIABLES
-# =========================
+# =========================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
-API_KEY = os.getenv("FOOTBALL_API_KEY")
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
+X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 
 
-# =========================
+# =========================================================
 # TELEGRAM CHANNELS
-# =========================
+# =========================================================
 
 CHANNEL_IDS = [
     "@yegnaLiverpool",
@@ -28,31 +28,84 @@ CHANNEL_IDS = [
 ]
 
 
-# =========================
-# FILES
-# =========================
+# =========================================================
+# SETTINGS
+# =========================================================
 
-NEWS_FILE = "last_news.txt"
-SOURCES_FILE = "sources.txt"
+CHECK_INTERVAL = 20 * 60
+
+X_SEARCH_URL = "https://api.x.com/2/tweets/search/recent"
+
+HISTORY_FILE = "posted_news.txt"
+
+MAX_HISTORY = 200
 
 
-# =========================
-# GROQ CLIENT
-# =========================
+# =========================================================
+# ONLY THESE SOURCES
+# =========================================================
+
+TRUSTED_ACCOUNTS = {
+    "LFC": "Liverpool FC Official",
+    "_pauljoyce": "Paul Joyce",
+    "David_Ornstein": "David Ornstein",
+    "JamesPearceLFC": "James Pearce",
+    "LewisSteele_": "Lewis Steele",
+    "MelissaReddy": "Melissa Reddy",
+    "FabrizioRomano": "Fabrizio Romano"
+}
+
+
+# =========================================================
+# GROQ
+# =========================================================
 
 client = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
 
 
-# =========================
-# GET NEWS SOURCES
-# =========================
+# =========================================================
+# BASIC CHECK
+# =========================================================
 
-def get_sources():
+def check_environment():
+
+    missing = []
+
+    if not TOKEN:
+        missing.append("BOT_TOKEN")
+
+    if not GROQ_KEY:
+        missing.append("GROQ_API_KEY")
+
+    if not X_BEARER_TOKEN:
+        missing.append("X_BEARER_TOKEN")
+
+    if missing:
+
+        print(
+            "Missing environment variables:",
+            ", ".join(missing)
+        )
+
+        return False
+
+    return True
+
+
+# =========================================================
+# HISTORY
+# =========================================================
+
+def load_history():
+
+    if not os.path.exists(HISTORY_FILE):
+
+        return []
 
     try:
 
         with open(
-            SOURCES_FILE,
+            HISTORY_FILE,
             "r",
             encoding="utf-8"
         ) as file:
@@ -65,174 +118,507 @@ def get_sources():
 
     except Exception as e:
 
-        print("Sources error:", e)
+        print("History read error:", e)
 
         return []
 
 
-# =========================
-# CLEAN HTML
-# =========================
-
-def clean_html(text):
-
-    if not text:
-        return ""
+def save_history(history):
 
     try:
 
-        text = html.unescape(text)
+        history = history[-MAX_HISTORY:]
 
-        text = re.sub(
-            r"<script.*?</script>",
-            "",
-            text,
-            flags=re.DOTALL | re.IGNORECASE
-        )
+        with open(
+            HISTORY_FILE,
+            "w",
+            encoding="utf-8"
+        ) as file:
 
-        text = re.sub(
-            r"<style.*?</style>",
-            "",
-            text,
-            flags=re.DOTALL | re.IGNORECASE
-        )
+            for item in history:
 
-        text = re.sub(
-            r"<[^>]+>",
-            " ",
-            text
-        )
-
-        text = re.sub(
-            r"\s+",
-            " ",
-            text
-        )
-
-        return text.strip()
+                file.write(item + "\n")
 
     except Exception as e:
 
-        print("HTML clean error:", e)
-
-        return str(text).strip()
+        print("History save error:", e)
 
 
-# =========================
-# CHECK LIVERPOOL NEWS
-# =========================
+# =========================================================
+# NORMALIZE TEXT
+# =========================================================
 
-def is_liverpool_news(text):
-
-    keywords = [
-        "Liverpool",
-        "Liverpool FC",
-        "LFC",
-        "Anfield",
-        "Salah",
-        "Mohamed Salah",
-        "Mohamed",
-        "Van Dijk",
-        "Virgil van Dijk",
-        "Iraola",
-        "Andoni Iraola",
-        "Arne Slot",
-        "Slot",
-        "Mac Allister",
-        "Trent",
-        "Alexander-Arnold",
-        "Szoboszlai",
-        "Gakpo",
-        "Nunez",
-        "Núñez",
-        "Darwin Nunez",
-        "Darwin Núñez",
-        "Luis Diaz",
-        "Luis Díaz",
-        "Konate",
-        "Konaté",
-        "Alisson",
-        "Robertson",
-        "Andy Robertson",
-        "Bradley",
-        "Conor Bradley",
-        "Gravenberch",
-        "Wirtz",
-        "Ekitike",
-        "Leoni",
-        "Giovanni Leoni"
-    ]
+def normalize_text(text):
 
     text = text.lower()
 
-    for word in keywords:
+    text = re.sub(
+        r"https?://\S+",
+        "",
+        text
+    )
 
-        if word.lower() in text:
+    text = re.sub(
+        r"@\w+",
+        "",
+        text
+    )
+
+    text = re.sub(
+        r"#\w+",
+        "",
+        text
+    )
+
+    text = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
+
+
+# =========================================================
+# NEWS HASH
+# =========================================================
+
+def news_hash(text):
+
+    normalized = normalize_text(text)
+
+    return hashlib.sha256(
+        normalized.encode("utf-8")
+    ).hexdigest()
+
+
+# =========================================================
+# LIVERPOOL KEYWORDS
+# =========================================================
+
+LIVERPOOL_KEYWORDS = [
+
+    "liverpool",
+    "lfc",
+    "anfield",
+
+    "salah",
+    "mohamed salah",
+
+    "van dijk",
+    "virgil van dijk",
+
+    "iraola",
+
+    "arne slot",
+
+    "mac allister",
+    "alexis mac allister",
+
+    "trent",
+    "alexander-arnold",
+
+    "szoboszlai",
+
+    "gakpo",
+
+    "nunez",
+    "darwin nunez",
+
+    "diaz",
+    "luis diaz",
+
+    "konate",
+    "ibrahima konate",
+
+    "alisson",
+    "alisson becker",
+
+    "robertson",
+    "andy robertson",
+
+    "bradley",
+    "conor bradley",
+
+    "gravenberch",
+
+    "wirtz",
+    "florian wirtz",
+
+    "ekitike",
+    "hugo ekitike",
+
+    "leoni",
+    "giovanni leoni"
+]
+
+
+# =========================================================
+# LIVERPOOL FILTER
+# =========================================================
+
+def is_liverpool_news(text):
+
+    lower_text = text.lower()
+
+    for keyword in LIVERPOOL_KEYWORDS:
+
+        if keyword in lower_text:
 
             return True
 
     return False
 
 
-# =========================
-# LAST NEWS
-# =========================
+# =========================================================
+# X API
+# =========================================================
 
-def get_last_news():
+def search_x():
 
-    if os.path.exists(NEWS_FILE):
+    if not X_BEARER_TOKEN:
 
-        try:
+        print("X_BEARER_TOKEN missing")
 
-            with open(
-                NEWS_FILE,
-                "r",
-                encoding="utf-8"
-            ) as file:
-
-                return file.read().strip()
-
-        except Exception as e:
-
-            print("Read last news error:", e)
-
-    return ""
+        return []
 
 
-def save_last_news(link):
+    account_query = " OR ".join(
+        f"from:{username}"
+        for username in TRUSTED_ACCOUNTS
+    )
+
+
+    query = (
+        f"({account_query}) "
+        f"-is:retweet "
+        f"-is:reply "
+        f"lang:en"
+    )
+
+
+    params = {
+
+        "query": query,
+
+        "max_results": 100,
+
+        "sort_order": "recency",
+
+        "tweet.fields": (
+            "id,"
+            "text,"
+            "created_at,"
+            "author_id,"
+            "attachments,"
+            "public_metrics"
+        ),
+
+        "expansions": (
+            "author_id,"
+            "attachments.media_keys"
+        ),
+
+        "user.fields": (
+            "username,"
+            "name"
+        ),
+
+        "media.fields": (
+            "type,"
+            "url,"
+            "preview_image_url,"
+            "alt_text"
+        )
+    }
+
+
+    headers = {
+
+        "Authorization":
+            f"Bearer {X_BEARER_TOKEN}"
+    }
+
 
     try:
 
-        with open(
-            NEWS_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
+        response = requests.get(
 
-            file.write(link)
+            X_SEARCH_URL,
+
+            headers=headers,
+
+            params=params,
+
+            timeout=20
+        )
+
+
+        if response.status_code != 200:
+
+            print(
+                "X API error:",
+                response.status_code,
+                response.text
+            )
+
+            return []
+
+
+        return response.json()
+
 
     except Exception as e:
 
-        print("Save news error:", e)
+        print("X request error:", e)
+
+        return []
 
 
-# =========================
-# TRANSLATE NEWS
-# =========================
+# =========================================================
+# EXTRACT X POSTS
+# =========================================================
 
-def translate_news(news_text):
+def get_posts():
 
-    if not GROQ_KEY or client is None:
+    data = search_x()
 
-        print("GROQ_API_KEY is missing")
+    if not data:
 
-        return None
+        return []
 
-    if not news_text.strip():
 
-        print("News text is empty")
+    posts = data.get(
+        "data",
+        []
+    )
 
-        return None
+
+    includes = data.get(
+        "includes",
+        {}
+    )
+
+
+    users = {
+
+        user["id"]: user
+
+        for user in includes.get(
+            "users",
+            []
+        )
+    }
+
+
+    media = {
+
+        item["media_key"]: item
+
+        for item in includes.get(
+            "media",
+            []
+        )
+    }
+
+
+    results = []
+
+
+    for post in posts:
+
+        author_id = post.get(
+            "author_id"
+        )
+
+
+        author = users.get(
+            author_id,
+            {}
+        )
+
+
+        username = author.get(
+            "username",
+            ""
+        )
+
+
+        if username not in TRUSTED_ACCOUNTS:
+
+            continue
+
+
+        text = post.get(
+            "text",
+            ""
+        )
+
+
+        if not text:
+
+            continue
+
+
+        if username != "LFC":
+
+            if not is_liverpool_news(text):
+
+                continue
+
+
+        image_url = None
+
+
+        attachments = post.get(
+            "attachments",
+            {}
+        )
+
+
+        media_keys = attachments.get(
+            "media_keys",
+            []
+        )
+
+
+        for key in media_keys:
+
+            media_item = media.get(
+                key,
+                {}
+            )
+
+
+            if media_item.get(
+                "type"
+            ) == "photo":
+
+                image_url = media_item.get(
+                    "url"
+                )
+
+                break
+
+
+            if media_item.get(
+                "type"
+            ) in [
+                "video",
+                "animated_gif"
+            ]:
+
+                image_url = media_item.get(
+                    "preview_image_url"
+                )
+
+                if image_url:
+
+                    break
+
+
+        results.append({
+
+            "id": post.get("id"),
+
+            "text": text,
+
+            "author": TRUSTED_ACCOUNTS[
+                username
+            ],
+
+            "username": username,
+
+            "created_at": post.get(
+                "created_at",
+                ""
+            ),
+
+            "image": image_url,
+
+            "url":
+                f"https://x.com/{username}/status/{post.get('id')}",
+
+            "metrics":
+                post.get(
+                    "public_metrics",
+                    {}
+                )
+        })
+
+
+    return results
+
+
+# =========================================================
+# IMPORTANT NEWS FILTER
+# =========================================================
+
+def classify_news(text, author):
+
+    if not client:
+
+        return False
+
+
+    prompt = f"""
+You are a strict Liverpool FC news editor.
+
+Source:
+{author}
+
+Post:
+{text}
+
+Decide whether this is IMPORTANT Liverpool FC news
+that should be posted to a Telegram Liverpool news channel.
+
+POST only if it is genuinely important, such as:
+
+- official Liverpool FC announcement
+- confirmed transfer
+- major transfer development
+- Here We Go / deal agreed
+- major injury or return
+- manager news
+- player signing
+- contract decision
+- important team news
+- official match result
+- major fixture news
+- Champions League news
+- major club statement
+- major breaking Liverpool news
+
+DO NOT POST:
+
+- ordinary opinions
+- jokes
+- generic football posts
+- unrelated football news
+- old news
+- repeated news
+- speculation without meaningful new information
+- simple player photos
+- training photos without important news
+- promotional posts
+- routine matchday posts unless they contain important information
+
+Return ONLY:
+
+YES
+
+or
+
+NO
+"""
+
 
     try:
 
@@ -243,94 +629,153 @@ def translate_news(news_text):
             messages=[
 
                 {
-                    "role": "system",
+                    "role":
+                        "system",
 
-                    "content": """
-አንተ የLiverpool FC የዜና አርታኢ ነህ።
-
-ከታች የተሰጠህን የእንግሊዝኛ
-Liverpool ዜና ወደ ተፈጥሯዊ፣
-ግልጽ እና ትክክለኛ አማርኛ ተርጉም።
-
-አስፈላጊ ደንቦች:
-
-1. ርዕሱን ብቻ አትተርጉም።
-   ርዕሱን እና የተሰጠውን የዜና ይዘት
-   በሙሉ ተርጉም።
-
-2. የዜናውን ትርጉም አትቀይር።
-
-3. ከተሰጠው ዜና ውጭ ምንም
-   አዲስ መረጃ አትጨምር።
-
-4. የተጫዋቾችን ስም አትቀይር።
-   ለምሳሌ:
-   Mohamed Salah
-   Virgil van Dijk
-   Florian Wirtz
-   Giovanni Leoni
-
-5. የክለቦችን እና የውድድሮችን
-   ስም በትክክል ጠብቅ።
-
-6. ቁጥሮች፣ ዋጋዎች፣ ቀናት፣
-   ውጤቶች እና ስታቲስቲክሶችን
-   አትቀይር።
-
-7. Liverpool → ሊቨርፑል
-   Premier League → ፕሪሚየር ሊግ
-   Champions League → ቻምፒየንስ ሊግ
-   transfer → ዝውውር
-   manager → አሰልጣኝ
-   friendly → የዝግጅት ጨዋታ
-
-8. ዜናውን ለTelegram ቻናል
-   የሚመች አማርኛ አድርግ።
-
-9. ርዕሱ ከሆነ በፊት 🔴 ወይም 🚨
-   መጠቀም ትችላለህ።
-
-10. የሌለ ጥቅስ፣ የሌለ መረጃ፣
-    የሌለ ዋጋ ወይም የሌለ ዝርዝር
-    አትፍጠር።
-
-11. ከዜናው ውጭ ማብራሪያ
-    ወይም የራስህን አስተያየት
-    አትጨምር።
-
-12. የመጨረሻ ምላሽህ
-    የተተረጎመው የአማርኛ ዜና ብቻ ይሁን።
-
-13. እንግሊዝኛውን ዜና
-    እንዳለ አትድገም።
-"""
+                    "content":
+                        "Return only YES or NO."
                 },
 
                 {
-                    "role": "user",
-                    "content": news_text
-                }
+                    "role":
+                        "user",
 
+                    "content":
+                        prompt
+                }
+            ],
+
+            temperature=0,
+
+            max_tokens=5
+        )
+
+
+        answer = (
+            result
+            .choices[0]
+            .message
+            .content
+            .strip()
+            .upper()
+        )
+
+
+        return answer == "YES"
+
+
+    except Exception as e:
+
+        print(
+            "Importance check error:",
+            e
+        )
+
+        return False
+
+
+# =========================================================
+# TRANSLATE
+# =========================================================
+
+def translate_news(text, author):
+
+    if not client:
+
+        return None
+
+
+    prompt = f"""
+አንተ የLiverpool FC የTelegram ዜና አርታኢ ነህ።
+
+የሚከተለውን የታመነ የX ምንጭ ዜና
+በተፈጥሯዊ፣ ግልጽ እና ሙያዊ አማርኛ አዘጋጅ።
+
+ምንጭ:
+{author}
+
+ደንቦች:
+
+1. የተሰጠውን መረጃ ብቻ ተጠቀም።
+
+2. ከራስህ መረጃ አትጨምር።
+
+3. የተጫዋች፣ የአሰልጣኝ እና የክለብ ስሞችን
+   በትክክል ጠብቅ።
+
+4. የዜናውን ትርጉም አትቀይር።
+
+5. እንግሊዝኛውን በቀጥታ አትተው።
+   የመጨረሻው ውጤት አማርኛ መሆን አለበት።
+
+6. ለTelegram የሚመች አጭር የዜና ቅርጽ ተጠቀም።
+
+7. ከርዕሱ መጀመሪያ 🔴 ወይም 🚨 ተጠቀም።
+
+8. የሌለ ዋጋ፣ ቀን፣ ጥቅስ፣
+   ስም ወይም ሌላ መረጃ አትፍጠር።
+
+9. ከዜናው ውጭ ማብራሪያ አትጨምር።
+
+10. "ምንጭ:" ብለህ አትጻፍ።
+
+የሚተረጎመው:
+
+{text}
+"""
+
+
+    try:
+
+        result = client.chat.completions.create(
+
+            model="llama-3.3-70b-versatile",
+
+            messages=[
+
+                {
+                    "role":
+                        "system",
+
+                    "content":
+                        "Translate and edit strictly into Amharic."
+                },
+
+                {
+                    "role":
+                        "user",
+
+                    "content":
+                        prompt
+                }
             ],
 
             temperature=0.1,
 
-            max_tokens=2500
+            max_tokens=700
         )
 
+
         translated = (
-            result.choices[0]
-            .message.content
+            result
+            .choices[0]
+            .message
+            .content
             .strip()
         )
 
-        if not translated:
 
-            print("Groq returned empty translation")
+        if not has_amharic(translated):
+
+            print(
+                "Translation rejected: not Amharic"
+            )
 
             return None
 
+
         return translated
+
 
     except Exception as e:
 
@@ -342,92 +787,155 @@ Liverpool ዜና ወደ ተፈጥሯዊ፣
         return None
 
 
-# =========================
-# FOOTBALL LIVE MATCHES
-# =========================
+# =========================================================
+# AMHARIC CHECK
+# =========================================================
+
+def has_amharic(text):
+
+    amharic_count = 0
+
+
+    for char in text:
+
+        if (
+            "\u1200"
+            <= char
+            <= "\u137F"
+        ):
+
+            amharic_count += 1
+
+
+    return amharic_count >= 5
+
+
+# =========================================================
+# LIVE MATCH
+# =========================================================
 
 def get_live_matches():
 
-    if not API_KEY:
-
-        print(
-            "FOOTBALL_API_KEY is missing"
-        )
+    if not FOOTBALL_API_KEY:
 
         return []
+
 
     url = (
         "https://v3.football.api-sports.io/"
         "fixtures?live=all"
     )
 
+
     headers = {
-        "x-apisports-key": API_KEY
+
+        "x-apisports-key":
+            FOOTBALL_API_KEY
     }
+
 
     try:
 
         response = requests.get(
+
             url,
+
             headers=headers,
+
             timeout=10
         )
 
+
         response.raise_for_status()
+
 
         data = response.json()
 
+
         matches = []
+
 
         for game in data.get(
             "response",
             []
         ):
 
-            home = game["teams"]["home"]["name"]
+            home = game[
+                "teams"
+            ][
+                "home"
+            ][
+                "name"
+            ]
 
-            away = game["teams"]["away"]["name"]
+
+            away = game[
+                "teams"
+            ][
+                "away"
+            ][
+                "name"
+            ]
+
 
             if (
-                "Liverpool" in home
-                or "Liverpool" in away
+                "Liverpool"
+                not in home
+                and
+                "Liverpool"
+                not in away
             ):
 
-                home_score = (
-                    game["goals"]["home"]
-                )
+                continue
 
-                away_score = (
-                    game["goals"]["away"]
-                )
 
-                elapsed = (
-                    game["fixture"]["status"]
-                    .get("elapsed")
-                )
+            home_score = game[
+                "goals"
+            ][
+                "home"
+            ]
 
-                if elapsed:
 
-                    match_text = (
-                        f"⚽ {home} "
-                        f"{home_score}-{away_score} "
-                        f"{away} "
-                        f"({elapsed}')"
-                    )
+            away_score = game[
+                "goals"
+            ][
+                "away"
+            ]
 
-                else:
 
-                    match_text = (
-                        f"⚽ {home} "
-                        f"{home_score}-{away_score} "
-                        f"{away}"
-                    )
+            elapsed = game[
+                "fixture"
+            ][
+                "status"
+            ].get(
+                "elapsed"
+            )
+
+
+            if elapsed:
 
                 matches.append(
-                    match_text
+
+                    f"⚽ {home} "
+                    f"{home_score}-"
+                    f"{away_score} "
+                    f"{away} "
+                    f"({elapsed}')"
                 )
 
+            else:
+
+                matches.append(
+
+                    f"⚽ {home} "
+                    f"{home_score}-"
+                    f"{away_score} "
+                    f"{away}"
+                )
+
+
         return matches
+
 
     except Exception as e:
 
@@ -439,418 +947,314 @@ def get_live_matches():
         return []
 
 
-# =========================
-# GET NEWS IMAGE
-# =========================
-
-def get_image(item):
-
-    try:
-
-        if hasattr(
-            item,
-            "media_content"
-        ):
-
-            if item.media_content:
-
-                for media in item.media_content:
-
-                    url = media.get("url")
-
-                    if url:
-
-                        return url
-
-
-        if hasattr(
-            item,
-            "media_thumbnail"
-        ):
-
-            if item.media_thumbnail:
-
-                for media in item.media_thumbnail:
-
-                    url = media.get("url")
-
-                    if url:
-
-                        return url
-
-
-        if hasattr(
-            item,
-            "enclosures"
-        ):
-
-            for enclosure in item.enclosures:
-
-                image_type = (
-                    enclosure
-                    .get("type", "")
-                    .lower()
-                )
-
-                if image_type.startswith(
-                    "image"
-                ):
-
-                    url = enclosure.get(
-                        "href"
-                    )
-
-                    if url:
-
-                        return url
-
-    except Exception as e:
-
-        print(
-            "Image error:",
-            e
-        )
-
-    return None
-
-
-# =========================
-# SEND NEWS
-# =========================
-
-async def send_news():
-
-    sources = get_sources()
-
-    print(
-        "Sources:",
-        sources
-    )
-
-    if not sources:
-
-        print(
-            "No sources found"
-        )
-
-        return
-
-    old_news = get_last_news()
-
-    latest = None
-
-    # =========================
-    # SEARCH RSS SOURCES
-    # =========================
-
-    for source in sources:
-
-        try:
-
-            feed = feedparser.parse(
-                source
-            )
-
-        except Exception as e:
-
-            print(
-                "RSS error:",
-                e
-            )
-
-            continue
-
-        for item in feed.entries:
-
-            link = getattr(
-                item,
-                "link",
-                ""
-            )
-
-            if not link:
-
-                continue
-
-            if link == old_news:
-
-                continue
-
-            title = clean_html(
-                getattr(
-                    item,
-                    "title",
-                    ""
-                )
-            )
-
-            summary = clean_html(
-                getattr(
-                    item,
-                    "summary",
-                    ""
-                )
-            )
-
-            content = (
-                f"{title} {summary}"
-            )
-
-            if is_liverpool_news(
-                content
-            ):
-
-                latest = item
-
-                break
-
-        if latest:
-
-            break
-
-    # =========================
-    # NO NEW NEWS
-    # =========================
-
-    if not latest:
-
-        print(
-            "No new Liverpool news"
-        )
-
-        return
-
-    # =========================
-    # ORIGINAL NEWS
-    # =========================
-
-    title = clean_html(
-        getattr(
-            latest,
-            "title",
-            ""
-        )
-    )
-
-    summary = clean_html(
-        getattr(
-            latest,
-            "summary",
-            ""
-        )
-    )
-
-    link = getattr(
-        latest,
-        "link",
-        ""
-    )
-
-    news_text = title
-
-    if summary:
-
-        news_text += (
-            "\n\n" + summary
-        )
-
-    print(
-        "Found Liverpool news:"
-    )
-
-    print(title)
-
-    # =========================
-    # TRANSLATE
-    # =========================
-
-    print(
-        "Translating news..."
-    )
-
-    translated = translate_news(
-        news_text
-    )
-
-    # =========================
-    # NEVER SEND ENGLISH
-    # =========================
-
-    if not translated:
-
-        print(
-            "Translation failed."
-        )
-
-        print(
-            "English news will NOT "
-            "be sent to Telegram."
-        )
-
-        return
-
-    # =========================
-    # LIVE MATCHES
-    # =========================
-
-    live = get_live_matches()
-
-    live_text = ""
-
-    if live:
-
-        live_text = (
-            "\n\n"
-            "🔴 LIVE\n"
-            + "\n".join(live)
-        )
-
-    # =========================
-    # SOURCE LINK
-    # =========================
-
-    source_text = ""
-
-    if link:
-
-        source_text = (
-            "\n\n"
-            "🔗 ምንጭ: "
-            + link
-        )
-
-    # =========================
-    # FINAL MESSAGE
-    # =========================
-
-    message = (
-        translated
-        + live_text
-        + source_text
-    )
-
-    # =========================
-    # TELEGRAM TOKEN CHECK
-    # =========================
-
-    if not TOKEN:
-
-        print(
-            "BOT_TOKEN is missing"
-        )
-
-        return
+# =========================================================
+# SEND TELEGRAM
+# =========================================================
+
+async def send_to_telegram(
+    post,
+    translated
+):
 
     bot = Bot(
         token=TOKEN
     )
 
-    # =========================
-    # SEND TO CHANNELS
-    # =========================
 
-    try:
+    message = translated
 
-        image = get_image(
-            latest
+
+    # -----------------------------------------------------
+    # LIVE MATCH
+    # -----------------------------------------------------
+
+    live = get_live_matches()
+
+
+    if live:
+
+        message += (
+            "\n\n"
+            "🔴 LIVE\n"
+            +
+            "\n".join(live)
         )
 
-        for channel in CHANNEL_IDS:
 
-            try:
+    # -----------------------------------------------------
+    # SEND
+    # -----------------------------------------------------
 
-                if image:
+    for channel in CHANNEL_IDS:
 
-                    await bot.send_photo(
+        try:
 
-                        chat_id=channel,
+            image = post.get(
+                "image"
+            )
 
-                        photo=image,
 
-                        caption=message
+            if image:
 
-                    )
+                await bot.send_photo(
 
-                else:
+                    chat_id=channel,
 
-                    await bot.send_message(
+                    photo=image,
 
-                        chat_id=channel,
-
-                        text=message
-
-                    )
-
-                print(
-                    f"Sent successfully "
-                    f"to {channel}"
+                    caption=message
                 )
 
-            except Exception as e:
+            else:
 
-                print(
-                    f"Telegram error for "
-                    f"{channel}: {e}"
+                await bot.send_message(
+
+                    chat_id=channel,
+
+                    text=message
                 )
 
-        # =========================
-        # SAVE ONLY AFTER SEND
-        # =========================
 
-        save_last_news(
-            link
-        )
+            print(
+                f"Sent successfully to {channel}"
+            )
+
+
+        except Exception as e:
+
+            print(
+                f"Telegram error {channel}:",
+                e
+            )
+
+
+# =========================================================
+# PROCESS NEWS
+# =========================================================
+
+async def process_news():
+
+    print(
+        "Checking trusted X sources..."
+    )
+
+
+    history = load_history()
+
+
+    posts = get_posts()
+
+
+    if not posts:
 
         print(
-            "News sent successfully"
+            "No new posts found."
         )
 
-    except Exception as e:
+        return
+
+
+    # newest first
+
+    posts.sort(
+
+        key=lambda x:
+        x.get(
+            "created_at",
+            ""
+        ),
+
+        reverse=True
+    )
+
+
+    for post in posts:
+
+        post_id = post[
+            "id"
+        ]
+
+
+        text_hash = news_hash(
+            post[
+                "text"
+            ]
+        )
+
+
+        # -------------------------------------------------
+        # DUPLICATE CHECK
+        # -------------------------------------------------
+
+        if post_id in history:
+
+            continue
+
+
+        if text_hash in history:
+
+            continue
+
 
         print(
-            "Telegram error:",
-            e
+            "Checking:",
+            post["author"]
         )
 
 
-# =========================
-# MAIN LOOP
-# =========================
+        print(
+            post["text"]
+        )
+
+
+        # -------------------------------------------------
+        # IMPORTANT NEWS
+        # -------------------------------------------------
+
+        important = classify_news(
+
+            post["text"],
+
+            post["author"]
+        )
+
+
+        if not important:
+
+            print(
+                "Skipped: not important"
+            )
+
+            history.append(
+                post_id
+            )
+
+            history.append(
+                text_hash
+            )
+
+            continue
+
+
+        # -------------------------------------------------
+        # TRANSLATION
+        # -------------------------------------------------
+
+        translated = translate_news(
+
+            post["text"],
+
+            post["author"]
+        )
+
+
+        if not translated:
+
+            print(
+                "Skipped: translation failed"
+            )
+
+            continue
+
+
+        # -------------------------------------------------
+        # SEND
+        # -------------------------------------------------
+
+        await send_to_telegram(
+
+            post,
+
+            translated
+        )
+
+
+        # -------------------------------------------------
+        # SAVE
+        # -------------------------------------------------
+
+        history.append(
+            post_id
+        )
+
+        history.append(
+            text_hash
+        )
+
+
+        save_history(
+            history
+        )
+
+
+        print(
+            "Important Liverpool news sent."
+        )
+
+
+        # ONLY ONE NEWS PER CHECK
+
+        break
+
+
+    save_history(
+        history
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 async def main():
 
     print(
-        "Liverpool News Bot "
-        "started 🚀"
+        "Liverpool News Bot started 🚀"
     )
+
+
+    print(
+        "Checking every 20 minutes."
+    )
+
+
+    print(
+        "Sources: Liverpool FC + 6 trusted reporters."
+    )
+
 
     while True:
 
         try:
 
-            await send_news()
+            await process_news()
 
         except Exception as e:
 
             print(
-                "Main loop error:",
+                "Main error:",
                 e
             )
 
+
         print(
-            "Waiting 5 minutes..."
+            "Waiting 20 minutes..."
         )
+
 
         await asyncio.sleep(
-            300
+            CHECK_INTERVAL
         )
 
 
-# =========================
+# =========================================================
 # START
-# =========================
+# =========================================================
 
 if __name__ == "__main__":
 
-    asyncio.run(main())
+    if check_environment():
 
+        asyncio.run(
+            main()
+        )
