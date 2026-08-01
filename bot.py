@@ -1,39 +1,3 @@
-    "Liverpool FC Official": [
-        "liverpool fc",
-        "liverpool football club",
-        "liverpoolfc.com",
-    ],
-    "Paul Joyce": [
-        "paul joyce",
-    ],
-    "David Ornstein": [
-        "david ornstein",
-    ],
-    "James Pearce": [
-        "james pearce",
-    ],
-    "Lewis Steele": [
-        "lewis steele",
-    ],
-    "Melissa Reddy": [
-        "melissa reddy",
-    ],
-    "Fabrizio Romano": [
-        "fabrizio romano",
-    ],
-}
-
-
-SEARCHES = [
-    '"Liverpool FC" "Liverpool"',
-    '"Liverpool" "Paul Joyce"',
-    '"Liverpool" "David Ornstein"',
-    '"Liverpool" "James Pearce"',
-    '"Liverpool" "Lewis Steele"',
-    '"Liverpool" "Melissa Reddy"',
-    '"Liverpool" "Fabrizio Romano"',
-]
-
 
 seen_news = set()
 live_seen = set()
