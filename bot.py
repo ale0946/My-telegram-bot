@@ -478,15 +478,18 @@ async def news_loop():
 
             # በአንድ check አንድ ዜና ብቻ
             # እንዳይጨናነቅ Telegram
-            if news_list:
-    print(f"📰 Sending: {news_list[0]['title']}")
+                if news_list:
+                print(f"📰 Sending: {news_list[0]['title']}")
 
-    success = await send_news(news_list[0])
+                success = await send_news(news_list[0])
 
-    if success:
-        print("✅ News sent to Telegram!")
-    else:
-        print("❌ Failed to send news to Telegram!")
+                if success:
+                    print("✅ News sent to Telegram!")
+                else:
+                    print("❌ Failed to send news to Telegram!")
+
+            else:
+                print("⏭️ No new Liverpool news found.")
 else:
     print("⏭️ No new Liverpool news found.")
         except Exception as e:
