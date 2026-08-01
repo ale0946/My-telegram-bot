@@ -561,3 +561,141 @@ async def fetch_news():
     return await asyncio.to_thread(
         fetch_news_sync
     )
+# =========================================================
+# REMOVE DUPLICATES
+# =========================================================
+
+def remove_duplicates(items):
+
+    unique = []
+
+    for item in items:
+
+        duplicate = False
+
+        for old in unique:
+
+            title_score = similarity(
+                item["title"],
+                old["title"]
+            )
+
+            summary_score = similarity(
+                item["summary"],
+                old["summary"]
+            )
+
+            # ተመሳሳይ ርዕስ
+            if title_score >= 0.65:
+
+                duplicate = True
+                break
+
+            # ተመሳሳይ ይዘት
+            if (
+                item["summary"]
+                and old["summary"]
+                and summary_score >= 0.78
+            ):
+
+                duplicate = True
+                break
+
+        if not duplicate:
+
+            unique.append(item)
+
+    return unique
+
+
+# =========================================================
+# AMHARIC VALIDATION
+# =========================================================
+
+def amharic_ratio(text):
+
+    if not text:
+        return 0
+
+    amharic = len(
+        re.findall(
+            r"[\u1200-\u137F]",
+            text
+        )
+    )
+
+    letters = len(
+        re.findall(
+            r"[A-Za-z\u1200-\u137F]",
+            text
+        )
+    )
+
+    if letters == 0:
+        return 0
+
+    return amharic / letters
+
+
+def clean_ai_output(text):
+
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    text = re.sub(
+        r"^(ርዕስ|Title)\s*:\s*",
+        "",
+        text,
+        flags=re.I
+    )
+
+    text = re.sub(
+        r"^(ዜና|News)\s*:\s*",
+        "",
+        text,
+        flags=re.I
+    )
+
+    text = re.sub(
+        r"^(ምንጭ|Source)\s*:\s*.*$",
+        "",
+        text,
+        flags=re.I | re.M
+    )
+
+    text = re.sub(
+        r"[=_\-]{4,}",
+        "",
+        text
+    )
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
+
+    return text.strip()
+
+
+def valid_amharic(text):
+
+    if not text:
+        return False
+
+    text = clean_ai_output(
+        text
+    )
+
+    if amharic_ratio(text) < 0.50:
+
+        logger.warning(
+            "Amharic ratio too low: %.2f",
+            amharic_ratio(text)
+        )
+
+        return False
+
+    return True
