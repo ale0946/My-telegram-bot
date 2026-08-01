@@ -1,5 +1,3 @@
-```python
-import os
 import re
 import json
 import time
@@ -10,6 +8,7 @@ import logging
 import requests
 import feedparser
 import tempfile
+
 
 from difflib import SequenceMatcher
 from urllib.parse import quote_plus, urljoin, urlparse
