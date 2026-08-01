@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import json
@@ -11,7 +12,7 @@ import feedparser
 import tempfile
 
 from difflib import SequenceMatcher
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from groq import Groq
@@ -52,29 +53,25 @@ LIVERPOOL_TEAM_ID = 40
 # SETTINGS
 # =========================================================
 
-# 15 minutes
 NEWS_CHECK_EVERY = 15 * 60
-
-# Live matches every 2 minutes
 LIVE_CHECK_EVERY = 2 * 60
 
-# Only accept very recent news.
-# This prevents old RSS articles from being posted.
+# News must be less than 45 minutes old
 MAX_NEWS_AGE = 45 * 60
 
-# Maximum 2 important news posts in 30 minutes
+# Maximum 2 news posts in 30 minutes
 MAX_NEWS_PER_30_MIN = 2
 
-# Minimum gap between news posts
+# Minimum 15 minutes between posts
 MIN_NEWS_GAP = 15 * 60
 
-SEEN_FILE = "seen_news_v4.json"
-SENT_TIMES_FILE = "sent_times_v4.json"
-LIVE_SEEN_FILE = "live_seen_v4.json"
+SEEN_FILE = "seen_news_v5.json"
+SENT_TIMES_FILE = "sent_times_v5.json"
+LIVE_SEEN_FILE = "live_seen_v5.json"
 
 
 # =========================================================
-# TRUSTED SOURCES ONLY
+# TRUSTED SOURCES
 # =========================================================
 
 TRUSTED_SOURCES = {
@@ -155,7 +152,6 @@ SEARCHES = [
 
 IMPORTANT_KEYWORDS = [
 
-    # Transfers
     "transfer",
     "signing",
     "signed",
@@ -176,21 +172,18 @@ IMPORTANT_KEYWORDS = [
     "joins",
     "join",
 
-    # Injuries / availability
     "injury",
     "injured",
     "fitness",
     "fit",
     "returns",
     "return",
-    "out",
     "ruled out",
     "unavailable",
     "doubt",
     "sidelined",
     "surgery",
 
-    # Manager / club
     "manager",
     "coach",
     "appointed",
@@ -199,7 +192,6 @@ IMPORTANT_KEYWORDS = [
     "confirmed",
     "confirmation",
 
-    # Competition
     "champions league",
     "premier league",
     "fa cup",
@@ -208,7 +200,6 @@ IMPORTANT_KEYWORDS = [
     "draw",
     "fixture",
 
-    # Match
     "match",
     "win",
     "won",
@@ -218,7 +209,6 @@ IMPORTANT_KEYWORDS = [
     "score",
     "goal",
 
-    # Major player news
     "salah",
     "van dijk",
     "wirtz",
@@ -236,7 +226,7 @@ IMPORTANT_KEYWORDS = [
 
 
 # =========================================================
-# ROUTINE / LOW-IMPORTANCE KEYWORDS
+# LOW IMPORTANCE
 # =========================================================
 
 LOW_IMPORTANCE_KEYWORDS = [
@@ -359,7 +349,7 @@ def save_json_list(filename, data):
 
 
 # =========================================================
-# LOAD SAVED DATA
+# LOAD DATA
 # =========================================================
 
 seen_news = set(
@@ -369,7 +359,6 @@ seen_news = set(
 live_seen = set(
     load_json_list(LIVE_SEEN_FILE)
 )
-
 
 for value in load_json_list(
     SENT_TIMES_FILE
@@ -467,6 +456,57 @@ def similarity(first, second):
 
 
 # =========================================================
+# SENTENCE DUPLICATE CLEANER
+# =========================================================
+
+def remove_repeated_sentences(text):
+
+    if not text:
+        return ""
+
+    text = clean_text(text)
+
+    # Split on sentence-ending punctuation
+    parts = re.split(
+        r"(?<=[.!?።፣])\s+",
+        text
+    )
+
+    final_parts = []
+
+    for part in parts:
+
+        part = part.strip()
+
+        if len(part) < 5:
+            continue
+
+        duplicate = False
+
+        for old in final_parts:
+
+            score = similarity(
+                part,
+                old
+            )
+
+            if score >= 0.82:
+
+                duplicate = True
+                break
+
+        if not duplicate:
+
+            final_parts.append(
+                part
+            )
+
+    return " ".join(
+        final_parts
+    ).strip()
+
+
+# =========================================================
 # LIVERPOOL FILTER
 # =========================================================
 
@@ -535,8 +575,8 @@ def is_important_news(title, summary):
         for keyword in LOW_IMPORTANCE_KEYWORDS
     )
 
-    # If a story is only routine content, reject it.
     strong_keywords = [
+
         "transfer",
         "signing",
         "deal",
@@ -581,38 +621,54 @@ def is_important_news(title, summary):
 def detect_source(
     title,
     summary,
-    source_name
+    source_name,
+    author=""
 ):
 
-    title_summary = (
-        f"{title} {summary}"
-    ).lower()
-
-    source_lower = (
-        source_name or ""
+    combined = (
+        f"{title} "
+        f"{summary} "
+        f"{source_name} "
+        f"{author}"
     ).lower()
 
     # Official Liverpool source
     if any(
-        alias.lower() in source_lower
+        alias.lower() in combined
         for alias in TRUSTED_SOURCES[
             "Liverpool FC Official"
         ]
     ):
 
-        return "Liverpool FC Official"
+        # Be careful:
+        # "Liverpool FC" in the article text itself
+        # does not automatically mean official source.
+        source_lower = (
+            source_name or ""
+        ).lower()
+
+        if any(
+            alias.lower() in source_lower
+            for alias in TRUSTED_SOURCES[
+                "Liverpool FC Official"
+            ]
+        ):
+
+            return "Liverpool FC Official"
 
     # Reporters
     for reporter in [
+
         "Paul Joyce",
         "David Ornstein",
         "James Pearce",
         "Lewis Steele",
         "Melissa Reddy",
         "Fabrizio Romano"
+
     ]:
 
-        if reporter.lower() in title_summary:
+        if reporter.lower() in combined:
 
             return reporter
 
@@ -668,16 +724,14 @@ def is_fresh_news(entry):
 
     age = now - published_at
 
-    # Reject future timestamps that are clearly wrong.
     if age < -10 * 60:
 
         logger.info(
-            "Rejected article with invalid future date."
+            "Rejected invalid future article."
         )
 
         return False
 
-    # MAIN OLD NEWS PROTECTION
     if age > MAX_NEWS_AGE:
 
         logger.info(
@@ -711,7 +765,7 @@ def get_google_news(query):
             timeout=20,
             headers={
                 "User-Agent":
-                "Mozilla/5.0 LiverpoolNewsBot/11.0"
+                "Mozilla/5.0 LiverpoolNewsBot/12.0"
             }
         )
 
@@ -820,17 +874,23 @@ def fetch_news_sync():
                     )
                 )
 
+            author = clean_text(
+                getattr(
+                    entry,
+                    "author",
+                    ""
+                )
+            )
+
             if not title or not link:
                 continue
 
-            # Liverpool only
             if not is_liverpool_news(
                 title,
                 summary
             ):
                 continue
 
-            # Important news only
             if not is_important_news(
                 title,
                 summary
@@ -843,7 +903,6 @@ def fetch_news_sync():
 
                 continue
 
-            # NEW: reject old news
             if not is_fresh_news(
                 entry
             ):
@@ -852,14 +911,16 @@ def fetch_news_sync():
             trusted = detect_source(
                 title,
                 summary,
-                source_name
+                source_name,
+                author
             )
 
             if not trusted:
 
                 logger.info(
-                    "Rejected untrusted source: %s",
-                    source_name
+                    "Rejected untrusted source: %s | author=%s",
+                    source_name,
+                    author
                 )
 
                 continue
@@ -887,6 +948,8 @@ def fetch_news_sync():
 
                 "source_name": source_name,
 
+                "author": author,
+
                 "entry": entry,
 
                 "published_at":
@@ -896,7 +959,6 @@ def fetch_news_sync():
 
             })
 
-    # Newest first
     collected.sort(
         key=lambda x:
         x.get("published_at", 0),
@@ -937,11 +999,13 @@ def remove_duplicates(items):
                 old["summary"]
             )
 
+            # Strong title similarity
             if title_score >= 0.58:
 
                 duplicate = True
                 break
 
+            # Strong summary similarity
             if (
                 item["summary"]
                 and old["summary"]
@@ -1053,47 +1117,50 @@ def translate_news_sync(item):
         return None
 
     prompt = f"""
-የተሰጠውን የLiverpool FC ዜና ብቻ
-ወደ ተፈጥሯዊ፣ ግልጽ እና ትክክለኛ
-የኢትዮጵያ አማርኛ ተርጉም።
+ከታች የተሰጠውን የLiverpool FC ዜና
+ብቻ በተፈጥሯዊ፣ ግልጽ እና ትክክለኛ
+የኢትዮጵያ አማርኛ የTelegram ዜና ቅርጽ አዘጋጅ።
 
 በጣም አስፈላጊ:
 
-- ይህ TRANSLATION ነው።
-- አዲስ ዜና አትፍጠር።
-- ከተሰጠው ጽሑፍ ውጭ መረጃ አትጨምር።
-- ምንም ግምት አታድርግ።
-- የተጫዋች ስም ካልተጠቀሰ አትጨምር።
-- የዋጋ መጠን ካልተጠቀሰ አትጨምር።
-- የቀን መረጃ ካልተጠቀሰ አትጨምር።
-- የዝውውር ወሬ ከሆነ ወሬ መሆኑን ጠብቅ።
-- የተሰጠውን ትርጉም አትቀይር።
+1. የተሰጠውን መረጃ ብቻ ተጠቀም።
+2. አዲስ እውነታ አትፍጠር።
+3. ከሌላ የራስህ እውቀት መረጃ አትጨምር።
+4. ስም፣ ዋጋ፣ ቀን፣ ቡድን፣ ውጤት ወይም ሌላ መረጃ ካልተጠቀሰ አትጨምር።
+5. የዝውውር ወሬ ከሆነ እንደ ወሬ አቅርብ።
+6. የተረጋገጠ ዜና ካልሆነ "ተዘግቧል"፣ "እንደተገለጸው" ወይም ተመሳሳይ ቃል ተጠቀም።
+7. የተሰጠው ዜና አጭር ከሆነ በራስህ ሀሳብ ረጅም አታድርገው።
+8. አንድን ሀሳብ በተደጋጋሚ አትጻፍ።
+9. አንድ ሰው/ክለብ/ተጫዋች በአንድ ዜና ውስጥ ብዙ ጊዜ ተጠቅሶ ካለ በተደጋጋሚ አትጻፈው።
+10. የዜናውን ዋና ነጥብ ጠብቅ።
 
-የTelegram ልጥፍ ቅርጽ:
+የTelegram ቅርጽ:
 
-1. አጭር እና ግልጽ የአማርኛ ርዕስ።
-2. ከዚያ የዜናው ይዘት በተፈጥሯዊ አማርኛ።
+ርዕስ:
+አጭር፣ ግልጽ እና የዜናውን ዋና ነጥብ የሚያሳይ የአማርኛ ርዕስ።
 
-እነዚህን አታስገባ:
+ዜና:
+በተፈጥሯዊ አማርኛ 1-3 አጭር አንቀጾች።
+የሌለውን መረጃ አትጨምር።
+የተደጋገመውን ይዘት አትድገም።
+
+እነዚህን በAI output ውስጥ በፍጹም አታስገባ:
+
 - 🔴 LIVERPOOL NEWS
+- ርዕስ:
+- ዜና:
 - ምንጭ:
 - Source:
+- 🔗
 - @yegnaLiverpool
 - Link
 - English headline
 - English paragraph
 
-የተጫዋቾች፣ የክለቦች፣ የሰዎች እና የስፖርት ስሞች
+የተጫዋቾች፣ የክለቦች እና የሰዎች ስሞች
 በEnglish እንዲቀሩ ይችላሉ።
 
-ቁጥሮች፣ ዋጋዎች እና ዋና እውነታዎችን
-በትክክል ጠብቅ።
-
-ተፈጥሯዊ አማርኛ ተጠቀም።
-የማይገባ የቃላት ድግግሞሽ አታድርግ።
-የማይገባ ወይም የተፈጠረ መረጃ አትጨምር።
-
-JSON ብቻ መልስ:
+በመጨረሻ የሚፈለገው JSON ብቻ ነው:
 
 {{
   "title": "የአማርኛ ርዕስ",
@@ -1118,12 +1185,13 @@ CONTENT:
                 {
                     "role": "system",
                     "content": (
-                        "Translate the supplied Liverpool FC "
-                        "news into natural Ethiopian Amharic. "
-                        "Do not invent facts. "
-                        "Do not add information. "
-                        "Return only valid JSON containing "
-                        "title and body."
+                        "You are a professional Ethiopian "
+                        "Amharic football news editor. "
+                        "Translate and rewrite only the "
+                        "provided Liverpool FC news. "
+                        "Never invent facts. "
+                        "Never repeat sentences. "
+                        "Return only valid JSON."
                     )
                 },
 
@@ -1177,6 +1245,15 @@ CONTENT:
 
             return None
 
+        # Remove accidental repeated sentences
+        body = remove_repeated_sentences(
+            body
+        )
+
+        title = remove_repeated_sentences(
+            title
+        )
+
         combined = (
             title
             + "\n\n"
@@ -1193,6 +1270,18 @@ CONTENT:
 
             logger.warning(
                 "AI output failed Amharic validation."
+            )
+
+            return None
+
+        # Final repeated-content protection
+        if similarity(
+            title,
+            body
+        ) >= 0.75:
+
+            logger.warning(
+                "AI title/body are too similar."
             )
 
             return None
@@ -1221,92 +1310,7 @@ async def translate_news(item):
 
 
 # =========================================================
-# IMAGE FROM RSS
-# =========================================================
-
-def get_rss_image(entry):
-
-    try:
-
-        media_content = getattr(
-            entry,
-            "media_content",
-            []
-        )
-
-        if media_content:
-
-            for media in media_content:
-
-                url = media.get(
-                    "url"
-                )
-
-                if url:
-                    return url
-
-        media_thumbnail = getattr(
-            entry,
-            "media_thumbnail",
-            []
-        )
-
-        if media_thumbnail:
-
-            for media in media_thumbnail:
-
-                url = media.get(
-                    "url"
-                )
-
-                if url:
-                    return url
-
-        enclosures = getattr(
-            entry,
-            "enclosures",
-            []
-        )
-
-        if enclosures:
-
-            for enclosure in enclosures:
-
-                url = enclosure.get(
-                    "href"
-                )
-
-                if url:
-
-                    media_type = (
-                        enclosure.get(
-                            "type",
-                            ""
-                        )
-                        .lower()
-                    )
-
-                    if (
-                        media_type.startswith(
-                            "image/"
-                        )
-                        or media_type == ""
-                    ):
-
-                        return url
-
-    except Exception as error:
-
-        logger.warning(
-            "RSS image extraction error: %s",
-            error
-        )
-
-    return None
-
-
-# =========================================================
-# IMAGE FROM ARTICLE
+# ORIGINAL ARTICLE IMAGE ONLY
 # =========================================================
 
 def get_page_image(article_url):
@@ -1344,11 +1348,27 @@ def get_page_image(article_url):
         if "text/html" not in content_type:
             return None
 
+        final_url = response.url
+
+        # IMPORTANT:
+        # If we are still on Google News, do not use
+        # its image.
+        if "news.google.com" in (
+            urlparse(final_url).netloc.lower()
+        ):
+
+            logger.warning(
+                "Still on Google News. Image rejected."
+            )
+
+            return None
+
         soup = BeautifulSoup(
             response.text,
             "html.parser"
         )
 
+        # 1. og:image
         image = soup.find(
             "meta",
             property="og:image"
@@ -1362,11 +1382,17 @@ def get_page_image(article_url):
 
             if image_url:
 
-                return urljoin(
-                    response.url,
+                image_url = urljoin(
+                    final_url,
                     image_url
                 )
 
+                # Reject Google image URLs
+                if "news.google.com" not in image_url.lower():
+
+                    return image_url
+
+        # 2. twitter:image
         image = soup.find(
             "meta",
             attrs={
@@ -1382,15 +1408,19 @@ def get_page_image(article_url):
 
             if image_url:
 
-                return urljoin(
-                    response.url,
+                image_url = urljoin(
+                    final_url,
                     image_url
                 )
+
+                if "news.google.com" not in image_url.lower():
+
+                    return image_url
 
     except Exception as error:
 
         logger.warning(
-            "Page image error: %s",
+            "Original page image error: %s",
             error
         )
 
@@ -1403,21 +1433,29 @@ def get_page_image(article_url):
 
 def get_image_url(item):
 
-    rss_image = get_rss_image(
-        item.get("entry")
+    article_url = item.get(
+        "link",
+        ""
     )
 
-    if rss_image:
-
-        return rss_image
-
-    page_image = get_page_image(
-        item.get("link", "")
+    # ONLY original article image.
+    # We deliberately do NOT use Google News RSS image.
+    image = get_page_image(
+        article_url
     )
 
-    if page_image:
+    if image:
 
-        return page_image
+        logger.info(
+            "✅ Original article image found."
+        )
+
+        return image
+
+    logger.info(
+        "ℹ️ No original article image found. "
+        "News will be sent without a photo."
+    )
 
     return None
 
@@ -1432,6 +1470,15 @@ def download_image(image_url):
         return None
 
     try:
+
+        # Never download Google News images
+        if "news.google.com" in image_url.lower():
+
+            logger.warning(
+                "❌ Google News image rejected."
+            )
+
+            return None
 
         response = requests.get(
             image_url,
@@ -1518,12 +1565,6 @@ def make_message(
         source
     )
 
-    # IMPORTANT:
-    # No "LIVERPOOL NEWS"
-    # No "ምንጭ:"
-    # Source name only
-    # @yegnaLiverpool at the end
-
     return (
         f"<b>{safe_title}</b>\n\n"
         f"{safe_body}\n\n"
@@ -1599,7 +1640,7 @@ async def send_news(item):
                     )
 
                 logger.info(
-                    "✅ News + photo sent."
+                    "✅ News + ORIGINAL photo sent."
                 )
 
             except Exception as photo_error:
@@ -1644,6 +1685,7 @@ async def send_news(item):
 
         else:
 
+            # No image = NO WRONG IMAGE.
             await bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=message,
@@ -1651,7 +1693,7 @@ async def send_news(item):
                 disable_web_page_preview=True
             )
 
-        # Save ONLY after successful send
+        # Save ONLY after successful Telegram send
         seen_news.add(
             item["id"]
         )
@@ -1810,7 +1852,8 @@ async def news_loop():
                 else:
 
                     logger.info(
-                        "News waiting because of 15-minute gap/limit."
+                        "News waiting because of "
+                        "15-minute gap/limit."
                     )
 
         except Exception as error:
@@ -2119,6 +2162,14 @@ async def main():
     )
 
     logger.info(
+        "🖼️ Google News image: BLOCKED"
+    )
+
+    logger.info(
+        "🖼️ Original article image: ON"
+    )
+
+    logger.info(
         "📰 News check: every 15 minutes"
     )
 
@@ -2160,3 +2211,4 @@ if __name__ == "__main__":
             "Fatal error: %s",
             error
         )
+```
