@@ -2,52 +2,62 @@ import os
 import re
 import json
 import time
+import random
+import asyncio
 import hashlib
 import logging
+import html as html_lib
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from urllib.parse import quote_plus
 
 import requests
 import feedparser
+from bs4 import BeautifulSoup
 
 from groq import Groq
 from telegram import Bot
 from telegram.constants import ParseMode
 
 
-# =========================================================
-# CONFIGURATION
-# =========================================================
+# ============================================================
+# SETTINGS
+# ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
-# ሁለቱም የLiverpool ቻናሎች
 CHANNELS = [
     "@yegnaLiverpool",
     "@yegnaLiverpoolET",
 ]
 
-CHECK_INTERVAL = 300          # 5 minutes
-MAX_NEWS_PER_CHECK = 3
-SEEN_FILE = "seen_news.json"
+NEWS_MIN_DELAY = 30 * 60
+NEWS_MAX_DELAY = 60 * 60
+
+CHECK_EVERY = 300
+SEEN_FILE = "last_news.json"
+
+# Liverpool FC API-Football team ID
+LIVERPOOL_TEAM_ID = 40
 
 
-# =========================================================
+# ============================================================
 # LOGGING
-# =========================================================
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("liverpool_bot")
 
 
-# =========================================================
-# REQUIRED KEYS
-# =========================================================
+# ============================================================
+# KEYS
+# ============================================================
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is missing")
@@ -60,40 +70,35 @@ bot = Bot(token=BOT_TOKEN)
 groq = Groq(api_key=GROQ_API_KEY)
 
 
-# =========================================================
-# APPROVED SOURCES
-# =========================================================
+# ============================================================
+# TRUSTED SOURCES
+# ============================================================
 
-APPROVED_SOURCES = {
+TRUSTED_SOURCES = {
     "Liverpool FC Official": [
         "Liverpool FC",
         "Liverpool Football Club",
+        "liverpoolfc.com",
     ],
 
     "Paul Joyce": [
-        "The Times",
-        "Times",
+        "Paul Joyce",
     ],
 
     "David Ornstein": [
-        "The Athletic",
-        "Athletic",
+        "David Ornstein",
     ],
 
     "James Pearce": [
-        "The Athletic",
-        "Athletic",
+        "James Pearce",
     ],
 
     "Lewis Steele": [
-        "Daily Mail",
-        "MailOnline",
-        "DailyMail",
+        "Lewis Steele",
     ],
 
     "Melissa Reddy": [
-        "Sky Sports",
-        "Sky",
+        "Melissa Reddy",
     ],
 
     "Fabrizio Romano": [
@@ -102,102 +107,76 @@ APPROVED_SOURCES = {
 }
 
 
-# =========================================================
-# SEARCH QUERIES
-# =========================================================
+# ============================================================
+# SEARCHES
+# ============================================================
 
-SEARCH_QUERIES = [
-    '"Liverpool FC" "Liverpool FC"',
-
+SEARCHES = [
+    '"Liverpool FC" "Liverpool"',
     '"Liverpool" "Paul Joyce"',
-
     '"Liverpool" "David Ornstein"',
-
     '"Liverpool" "James Pearce"',
-
     '"Liverpool" "Lewis Steele"',
-
     '"Liverpool" "Melissa Reddy"',
-
     '"Liverpool" "Fabrizio Romano"',
 ]
 
 
-# =========================================================
-# LOAD SEEN NEWS
-# =========================================================
+# ============================================================
+# MEMORY
+# ============================================================
 
-def load_seen_news():
+def load_seen():
 
     try:
-
         if not os.path.exists(SEEN_FILE):
             return set()
 
-        with open(
-            SEEN_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            data = json.load(file)
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
         if isinstance(data, list):
             return set(data)
 
-        return set()
-
     except Exception as e:
+        logger.error("Memory load error: %s", e)
 
-        logger.error(
-            "Could not load seen news: %s",
-            e
-        )
-
-        return set()
+    return set()
 
 
-def save_seen_news(seen):
+def save_seen():
 
     try:
+        data = list(seen_news)[-2000:]
 
-        data = list(seen)[-1500:]
-
-        with open(
-            SEEN_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
+        with open(SEEN_FILE, "w", encoding="utf-8") as f:
             json.dump(
                 data,
-                file,
+                f,
                 ensure_ascii=False,
                 indent=2
             )
 
     except Exception as e:
-
-        logger.error(
-            "Could not save seen news: %s",
-            e
-        )
+        logger.error("Memory save error: %s", e)
 
 
-seen_news = load_seen_news()
+seen_news = load_seen()
 
 
-# =========================================================
-# TEXT CLEANING
-# =========================================================
+# ============================================================
+# TEXT
+# ============================================================
 
 def clean_text(text):
 
     if not text:
         return ""
 
+    text = html_lib.unescape(str(text))
+
     text = re.sub(
-        r"<[^>]+>",
+        r"<[^>]*>",
         " ",
         text
     )
@@ -211,39 +190,50 @@ def clean_text(text):
     return text.strip()
 
 
-# =========================================================
-# NEWS ID
-# =========================================================
+def normalize(text):
 
-def create_news_id(title, link):
+    text = clean_text(text).lower()
 
-    raw = (
-        title.strip().lower()
-        + "|"
-        + link.strip().lower()
+    text = re.sub(
+        r"[^a-z0-9\u1200-\u137f ]",
+        " ",
+        text
     )
 
-    return hashlib.sha256(
-        raw.encode("utf-8")
-    ).hexdigest()
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
 
 
-# =========================================================
-# CHECK LIVERPOOL NEWS
-# =========================================================
+def similarity(a, b):
+
+    return SequenceMatcher(
+        None,
+        normalize(a),
+        normalize(b)
+    ).ratio()
+
+
+# ============================================================
+# LIVERPOOL FILTER
+# ============================================================
 
 def is_liverpool_news(title, summary):
 
     text = (
-        f"{title} {summary}"
+        title + " " + summary
     ).lower()
 
     keywords = [
         "liverpool",
         "liverpool fc",
-        "reds",
-        "anfield",
         "lfc",
+        "anfield",
+        "reds",
         "arne slot",
         "andoni iraola",
         "virgil van dijk",
@@ -252,61 +242,45 @@ def is_liverpool_news(title, summary):
         "alexis mac allister",
         "ryan gravenberch",
         "dominik szoboszlai",
-        "jeremy jacquet",
+        "cody gakpo",
+        "ibrahima konate",
+        "andy robertson",
+        "trent alexander-arnold",
         "giovanni leoni",
+        "jeremy jacquet",
     ]
 
     return any(
-        keyword in text
-        for keyword in keywords
+        word in text
+        for word in keywords
     )
 
 
-# =========================================================
-# AMHARIC CHECK
-# =========================================================
+# ============================================================
+# SOURCE DETECTION
+# ============================================================
 
-def amharic_ratio(text):
+def detect_source(title, summary, source):
 
-    if not text:
-        return 0
+    text = (
+        f"{title} {summary} {source}"
+    ).lower()
 
-    amharic_chars = len(
-        re.findall(
-            r"[\u1200-\u137F]",
-            text
-        )
-    )
+    for trusted_name, aliases in TRUSTED_SOURCES.items():
 
-    letters = len(
-        re.findall(
-            r"[A-Za-z\u1200-\u137F]",
-            text
-        )
-    )
+        for alias in aliases:
 
-    if letters == 0:
-        return 0
+            if alias.lower() in text:
+                return trusted_name
 
-    return amharic_chars / letters
+    return None
 
 
-def is_good_amharic(text):
-
-    if not text:
-        return False
-
-    ratio = amharic_ratio(text)
-
-    # At least 35% Ge'ez characters
-    return ratio >= 0.35
-
-
-# =========================================================
+# ============================================================
 # GOOGLE NEWS RSS
-# =========================================================
+# ============================================================
 
-def get_rss(query):
+def get_google_news(query):
 
     url = (
         "https://news.google.com/rss/search?"
@@ -323,7 +297,8 @@ def get_rss(query):
             timeout=20,
             headers={
                 "User-Agent":
-                "Mozilla/5.0"
+                "Mozilla/5.0 "
+                "LiverpoolNewsBot/1.0"
             }
         )
 
@@ -336,87 +311,51 @@ def get_rss(query):
     except Exception as e:
 
         logger.error(
-            "RSS request failed: %s",
+            "RSS error: %s",
             e
         )
 
         return None
 
 
-# =========================================================
-# SOURCE DETECTION
-# =========================================================
+# ============================================================
+# NEWS ID
+# ============================================================
 
-def get_source_name(entry):
+def make_id(title, link):
 
-    try:
+    value = (
+        normalize(title)
+        + "|"
+        + link.lower().strip()
+    )
 
-        source = getattr(
-            entry,
-            "source",
-            None
-        )
-
-        if source:
-
-            name = getattr(
-                source,
-                "title",
-                ""
-            )
-
-            return clean_text(name)
-
-    except Exception:
-        pass
-
-    return ""
+    return hashlib.sha256(
+        value.encode("utf-8")
+    ).hexdigest()
 
 
-def detect_approved_source(
-    title,
-    summary,
-    source_name
-):
-
-    combined = (
-        f"{title} "
-        f"{summary} "
-        f"{source_name}"
-    ).lower()
-
-    for source, aliases in APPROVED_SOURCES.items():
-
-        for alias in aliases:
-
-            if alias.lower() in combined:
-
-                return source
-
-    return None
-
-
-# =========================================================
+# ============================================================
 # FETCH NEWS
-# =========================================================
+# ============================================================
 
 def fetch_news():
 
-    results = []
+    collected = []
 
-    for query in SEARCH_QUERIES:
+    for query in SEARCHES:
 
         logger.info(
             "Searching: %s",
             query
         )
 
-        feed = get_rss(query)
+        feed = get_google_news(query)
 
         if not feed:
             continue
 
-        for entry in feed.entries[:10]:
+        for entry in feed.entries[:15]:
 
             title = clean_text(
                 getattr(
@@ -434,11 +373,30 @@ def fetch_news():
                 )
             )
 
-            link = getattr(
-                entry,
-                "link",
-                ""
+            link = clean_text(
+                getattr(
+                    entry,
+                    "link",
+                    ""
+                )
             )
+
+            source_obj = getattr(
+                entry,
+                "source",
+                None
+            )
+
+            source_name = ""
+
+            if source_obj:
+                source_name = clean_text(
+                    getattr(
+                        source_obj,
+                        "title",
+                        ""
+                    )
+                )
 
             if not title or not link:
                 continue
@@ -449,20 +407,16 @@ def fetch_news():
             ):
                 continue
 
-            source_name = get_source_name(
-                entry
-            )
-
-            approved_source = detect_approved_source(
+            trusted = detect_source(
                 title,
                 summary,
                 source_name
             )
 
-            if not approved_source:
+            if not trusted:
                 continue
 
-            news_id = create_news_id(
+            news_id = make_id(
                 title,
                 link
             )
@@ -470,54 +424,45 @@ def fetch_news():
             if news_id in seen_news:
                 continue
 
-            results.append({
+            collected.append({
                 "id": news_id,
                 "title": title,
                 "summary": summary,
                 "link": link,
-                "source": approved_source,
+                "source": trusted,
                 "source_name": source_name,
             })
 
-    return results
+    return collected
 
 
-# =========================================================
+# ============================================================
 # REMOVE DUPLICATES
-# =========================================================
+# ============================================================
 
-def similarity(a, b):
-
-    return SequenceMatcher(
-        None,
-        a.lower(),
-        b.lower()
-    ).ratio()
-
-
-def remove_duplicate_news(news):
+def remove_duplicates(items):
 
     unique = []
 
-    for item in news:
+    for item in items:
 
         duplicate = False
 
-        for existing in unique:
+        for old in unique:
 
-            title_score = similarity(
+            title_similarity = similarity(
                 item["title"],
-                existing["title"]
+                old["title"]
             )
 
-            content_score = similarity(
+            content_similarity = similarity(
                 item["summary"],
-                existing["summary"]
+                old["summary"]
             )
 
             if (
-                title_score >= 0.70
-                or content_score >= 0.78
+                title_similarity >= 0.72
+                or content_similarity >= 0.80
             ):
 
                 duplicate = True
@@ -529,40 +474,70 @@ def remove_duplicate_news(news):
     return unique
 
 
-# =========================================================
-# GROQ - AMHARIC NEWS
-# =========================================================
+# ============================================================
+# AMHARIC VALIDATION
+# ============================================================
 
-def generate_amharic_news(item):
+def amharic_ratio(text):
+
+    if not text:
+        return 0
+
+    amharic = len(
+        re.findall(
+            r"[\u1200-\u137F]",
+            text
+        )
+    )
+
+    letters = len(
+        re.findall(
+            r"[A-Za-z\u1200-\u137F]",
+            text
+        )
+    )
+
+    if letters == 0:
+        return 0
+
+    return amharic / letters
+
+
+def is_amharic(text):
+
+    return amharic_ratio(text) >= 0.30
+
+
+# ============================================================
+# GROQ
+# ============================================================
+
+def translate_news(item):
 
     prompt = f"""
-አንተ የLiverpool FC ባለሙያ የአማርኛ የስፖርት ዜና አዘጋጅ ነህ።
+አንተ የLiverpool FC የአማርኛ ስፖርት ጋዜጠኛ ነህ።
 
-ከታች የተሰጠውን የLiverpool ዜና ወደ ተፈጥሯዊ፣
-ግልጽ፣ ሙያዊ እና ለTelegram ተስማሚ አማርኛ ቀይር።
+የተሰጠህን ዜና ለTelegram ቻናል ተስማሚ
+በሆነ ተፈጥሯዊ አማርኛ አዘጋጅ።
 
 ጥብቅ ህጎች:
 
-1. የርዕሱን 100% በአማርኛ ጻፍ።
-2. የዜናውን ዋና ይዘት በአማርኛ ጻፍ።
-3. English headline በፍጹም አትተው።
-4. English paragraph በፍጹም አትተው።
-5. የተጫዋች፣ የአሰልጣኝ፣ የክለብ እና የውድድር ስሞች
-   በEnglish ሊቀሩ ይችላሉ።
-6. ቁጥር፣ ዋጋ፣ ቀን እና የዝውውር መረጃ አትቀይር።
+1. ርዕሱ በአማርኛ ብቻ ይሁን።
+2. የዜናው ዋና ይዘት በአማርኛ ይሁን።
+3. English headline እንደመጣ አትተው።
+4. English paragraph አትተው።
+5. የሰው ስም፣ የክለብ ስም እና የውድድር ስም
+   English ሊቀር ይችላል።
+6. ቁጥሮች፣ ዋጋዎች፣ ቀኖች እና እውነታዎችን አትቀይር።
 7. ያልተሰጠህን መረጃ አትፍጠር።
-8. ወሬን እንደ እውነት አታቅርብ።
-9. የዝውውር ዜና ከሆነ "ሪፖርት መሠረት"፣
-   "ውይይት አለ"፣ "ተጠይቋል" እና "ይፈልጋል"
-   የሚሉትን ሁኔታዎች በግልጽ አሳይ።
-10. አትጨምር፣ አትገምት፣ አትዋሽ።
-11. በአማርኛ በተፈጥሯዊ የስፖርት ጋዜጠኛ ቋንቋ ጻፍ።
-12. ርዕሱ አጭር፣ ማራኪ እና የዜናውን ዋና ነገር የሚያሳይ ይሁን።
-13. በመጨረሻ የምንጩን ስም በአማርኛ አሳይ።
-14. Markdown አትጠቀም።
-15. የምንጩን English headline እንደገና አታሳይ።
+8. Rumour ከሆነ እንደ rumour ግልጽ አድርግ።
+9. የተረጋገጠ ዝውውር ካልሆነ
+   "ተዘግቧል" ወይም "ሪፖርት እንደሚለው"
+   በማለት ጻፍ።
+10. የምንጩን ስም አትፍጠር።
+11. አጭር፣ ግልጽ እና የስፖርት ጋዜጠኛ ቋንቋ ተጠቀም።
 
-የሚመለሰው በዚህ ቅርጽ ብቻ ይሁን:
+ቅርጹ ይህ ብቻ ይሁን:
 
 ርዕስ:
 [አማርኛ ርዕስ]
@@ -573,70 +548,66 @@ def generate_amharic_news(item):
 ምንጭ:
 [{item["source"]}]
 
-የዋናው ርዕስ:
+ዋናው የዜና ርዕስ:
 {item["title"]}
 
-የዋናው ይዘት:
+ዋናው ይዘት:
 {item["summary"]}
-
-የተፈቀደው ምንጭ:
-{item["source"]}
 """
 
     try:
 
-        response = groq.chat.completions.create(
+        result = groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
-
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are an expert Ethiopian "
-                        "Amharic football news editor. "
-                        "Your output must be predominantly "
-                        "Amharic and the headline must be "
-                        "written in Amharic."
-                    ),
+                    "content":
+                    "Write Liverpool football news "
+                    "in natural Ethiopian Amharic."
                 },
                 {
                     "role": "user",
-                    "content": prompt,
-                },
+                    "content": prompt
+                }
             ],
-
-            temperature=0.15,
-            max_tokens=900,
+            temperature=0.10,
+            max_tokens=900
         )
 
-        result = (
-            response
+        text = (
+            result
             .choices[0]
             .message
             .content
             .strip()
         )
 
-        # If AI returned too much English,
-        # ask it once again.
-        if not is_good_amharic(result):
+        if not is_amharic(text):
 
-            retry_prompt = f"""
-ይህን የLiverpool ዜና እንደገና ጻፍ።
+            logger.warning(
+                "AI returned too much English. Retrying..."
+            )
 
-በጣም አስፈላጊ:
-- ርዕስ = አማርኛ
-- ዜና = አማርኛ
-- English ሀረጎችን አትተው
-- የሰዎች/ክለቦች ስሞች ብቻ English ሊሆኑ ይችላሉ
-- ምንም አዲስ መረጃ አትጨምር
+            retry = groq.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "system",
+                        "content":
+                        "You must write the entire "
+                        "football news in Amharic. "
+                        "Do not leave an English headline."
+                    },
+                    {
+                        "role": "user",
+                        "content":
+                        f"""
+በአማርኛ ብቻ እንደገና ጻፈው:
 
-የዋናው ዜና:
 {item["title"]}
 
 {item["summary"]}
-
-ቅርጽ:
 
 ርዕስ:
 ...
@@ -647,29 +618,13 @@ def generate_amharic_news(item):
 ምንጭ:
 {item["source"]}
 """
-
-            retry = groq.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-
-                messages=[
-                    {
-                        "role": "system",
-                        "content":
-                        "Write the football news "
-                        "in natural Amharic."
-                    },
-                    {
-                        "role": "user",
-                        "content":
-                        retry_prompt,
-                    },
+                    }
                 ],
-
-                temperature=0.1,
-                max_tokens=900,
+                temperature=0.05,
+                max_tokens=900
             )
 
-            result = (
+            text = (
                 retry
                 .choices[0]
                 .message
@@ -677,7 +632,7 @@ def generate_amharic_news(item):
                 .strip()
             )
 
-        return result
+        return text
 
     except Exception as e:
 
@@ -689,170 +644,455 @@ def generate_amharic_news(item):
         return None
 
 
-# =========================================================
-# FORMAT TELEGRAM MESSAGE
-# =========================================================
+# ============================================================
+# IMAGE
+# ============================================================
 
-def format_message(amharic_news, link):
+def get_image(url):
 
-    message = (
+    try:
+
+        response = requests.get(
+            url,
+            timeout=15,
+            headers={
+                "User-Agent":
+                "Mozilla/5.0"
+            }
+        )
+
+        if response.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        image = soup.find(
+            "meta",
+            property="og:image"
+        )
+
+        if image:
+            return image.get("content")
+
+    except Exception as e:
+
+        logger.warning(
+            "Image error: %s",
+            e
+        )
+
+    return None
+
+
+# ============================================================
+# TELEGRAM MESSAGE
+# ============================================================
+
+def make_message(news, link):
+
+    safe_news = html_lib.escape(
+        news
+    )
+
+    safe_link = html_lib.escape(
+        link,
+        quote=True
+    )
+
+    return (
         "🔴 <b>LIVERPOOL NEWS</b>\n\n"
-        f"{amharic_news}\n\n"
-        "🔗 <a href=\""
-        f"{link}"
-        "\">የዋናውን ዜና ይመልከቱ</a>\n\n"
+        f"{safe_news}\n\n"
+        f"🔗 <a href=\"{safe_link}\">"
+        "የዋናውን ዜና ይመልከቱ"
+        "</a>\n\n"
         "🔴 <b>YN Liverpool</b>"
     )
 
-    return message
 
+# ============================================================
+# SEND
+# ============================================================
 
-# =========================================================
-# SEND TO ALL CHANNELS
-# =========================================================
+async def send_news(item):
 
-async def send_to_channels(message):
+    news = translate_news(item)
 
-    success_count = 0
+    if not news:
+        return False
+
+    if not is_amharic(news):
+
+        logger.error(
+            "News rejected: not enough Amharic."
+        )
+
+        return False
+
+    message = make_message(
+        news,
+        item["link"]
+    )
+
+    success = False
+
+    image_url = get_image(
+        item["link"]
+    )
 
     for channel in CHANNELS:
 
         try:
 
-            await bot.send_message(
-                chat_id=channel,
-                text=message,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=False,
-            )
+            if image_url:
+
+                try:
+
+                    await bot.send_photo(
+                        chat_id=channel,
+                        photo=image_url,
+                        caption=message,
+                        parse_mode=ParseMode.HTML
+                    )
+
+                except Exception:
+
+                    await bot.send_message(
+                        chat_id=channel,
+                        text=message,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=False
+                    )
+
+            else:
+
+                await bot.send_message(
+                    chat_id=channel,
+                    text=message,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=False
+                )
 
             logger.info(
-                "Posted successfully to %s",
+                "News sent to %s",
                 channel
             )
 
-            success_count += 1
+            success = True
 
         except Exception as e:
 
             logger.error(
-                "Could not post to %s: %s",
+                "Telegram error for %s: %s",
                 channel,
                 e
             )
 
-    return success_count
-
-
-# =========================================================
-# PROCESS ONE NEWS
-# =========================================================
-
-async def process_news(item):
-
-    logger.info(
-        "Preparing: %s",
-        item["title"]
-    )
-
-    amharic_news = generate_amharic_news(
-        item
-    )
-
-    if not amharic_news:
-
-        logger.error(
-            "AI did not generate news."
-        )
-
-        return False
-
-    # Safety check
-    if not is_good_amharic(
-        amharic_news
-    ):
-
-        logger.error(
-            "AI response is not sufficiently Amharic."
-        )
-
-        return False
-
-    message = format_message(
-        amharic_news,
-        item["link"]
-    )
-
-    sent = await send_to_channels(
-        message
-    )
-
-    # Mark as seen only if at least one
-    # channel received the post.
-    if sent > 0:
+    if success:
 
         seen_news.add(
             item["id"]
         )
 
-        save_seen_news(
-            seen_news
-        )
+        save_seen()
 
-        return True
-
-    return False
+    return success
 
 
-# =========================================================
-# CHECK NEWS
-# =========================================================
+# ============================================================
+# FOOTBALL API
+# ============================================================
 
-async def check_news():
+def football_request(endpoint, params=None):
 
-    logger.info(
-        "Checking for new Liverpool news..."
+    if not FOOTBALL_API_KEY:
+        return None
+
+    url = (
+        "https://v3.football.api-sports.io/"
+        + endpoint
     )
 
-    news = fetch_news()
+    headers = {
+        "x-apisports-key":
+        FOOTBALL_API_KEY
+    }
 
-    if not news:
+    try:
 
-        logger.info(
-            "No new approved Liverpool news."
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params or {},
+            timeout=20
         )
 
+        if response.status_code != 200:
+            return None
+
+        return response.json()
+
+    except Exception as e:
+
+        logger.error(
+            "Football API error: %s",
+            e
+        )
+
+        return None
+
+
+# ============================================================
+# LIVE MATCH
+# ============================================================
+
+async def send_live_matches():
+
+    if not FOOTBALL_API_KEY:
         return
 
-    news = remove_duplicate_news(
-        news
+    data = football_request(
+        "fixtures",
+        {
+            "team": LIVERPOOL_TEAM_ID,
+            "live": "all"
+        }
     )
 
-    news = news[:MAX_NEWS_PER_CHECK]
+    if not data:
+        return
 
-    logger.info(
-        "New unique stories: %d",
-        len(news)
+    fixtures = data.get(
+        "response",
+        []
     )
 
-    for item in news:
+    for game in fixtures:
 
-        await process_news(
-            item
+        fixture = game.get(
+            "fixture",
+            {}
         )
 
-        # Avoid sending too fast
-        time.sleep(8)
+        teams = game.get(
+            "teams",
+            {}
+        )
+
+        goals = game.get(
+            "goals",
+            {}
+        )
+
+        home = teams.get(
+            "home",
+            {}
+        )
+
+        away = teams.get(
+            "away",
+            {}
+        )
+
+        home_name = home.get(
+            "name",
+            ""
+        )
+
+        away_name = away.get(
+            "name",
+            ""
+        )
+
+        home_score = goals.get(
+            "home"
+        )
+
+        away_score = goals.get(
+            "away"
+        )
+
+        status = (
+            fixture
+            .get("status", {})
+            .get("long", "")
+        )
+
+        minute = (
+            fixture
+            .get("status", {})
+            .get("elapsed")
+        )
+
+        message = (
+            "🔴 <b>LIVERPOOL LIVE</b>\n\n"
+            f"⚽ {html_lib.escape(home_name)} "
+            f"{home_score if home_score is not None else 0}"
+            " - "
+            f"{away_score if away_score is not None else 0} "
+            f"{html_lib.escape(away_name)}\n\n"
+        )
+
+        if minute:
+            message += f"⏱️ {minute}'\n"
+
+        message += (
+            f"📌 {html_lib.escape(status)}"
+        )
+
+        for channel in CHANNELS:
+
+            try:
+
+                await bot.send_message(
+                    chat_id=channel,
+                    text=message,
+                    parse_mode=ParseMode.HTML
+                )
+
+            except Exception as e:
+
+                logger.error(
+                    "Live send error: %s",
+                    e
+                )
 
 
-# =========================================================
-# MAIN LOOP
-# =========================================================
+# ============================================================
+# NEWS LOOP
+# ============================================================
+
+async def news_loop():
+
+    first_run = True
+
+    while True:
+
+        try:
+
+            logger.info(
+                "Checking trusted Liverpool news..."
+            )
+
+            news = fetch_news()
+
+            news = remove_duplicates(
+                news
+            )
+
+            if news:
+
+                # First run: one story only
+                # so the bot doesn't flood the channel.
+                item = news[0]
+
+                sent = await send_news(
+                    item
+                )
+
+                if sent:
+
+                    if first_run:
+
+                        delay = random.randint(
+                            NEWS_MIN_DELAY,
+                            NEWS_MAX_DELAY
+                        )
+
+                        logger.info(
+                            "Next news in %d minutes",
+                            delay // 60
+                        )
+
+                        await asyncio.sleep(
+                            delay
+                        )
+
+                    else:
+
+                        delay = random.randint(
+                            NEWS_MIN_DELAY,
+                            NEWS_MAX_DELAY
+                        )
+
+                        logger.info(
+                            "Next news in %d minutes",
+                            delay // 60
+                        )
+
+                        await asyncio.sleep(
+                            delay
+                        )
+
+                else:
+
+                    await asyncio.sleep(
+                        CHECK_EVERY
+                    )
+
+            else:
+
+                logger.info(
+                    "No new trusted Liverpool news."
+                )
+
+                await asyncio.sleep(
+                    CHECK_EVERY
+                )
+
+            first_run = False
+
+        except Exception as e:
+
+            logger.exception(
+                "News loop error: %s",
+                e
+            )
+
+            await asyncio.sleep(
+                CHECK_EVERY
+            )
+
+
+# ============================================================
+# LIVE LOOP
+# ============================================================
+
+async def live_loop():
+
+    while True:
+
+        try:
+
+            await send_live_matches()
+
+        except Exception as e:
+
+            logger.error(
+                "Live loop error: %s",
+                e
+            )
+
+        # Live checks every 2 minutes
+        await asyncio.sleep(
+            120
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 async def main():
 
     logger.info(
-        "🔴 Liverpool Amharic News Bot started!"
+        "===================================="
+    )
+
+    logger.info(
+        "🔴 Liverpool Amharic News Bot started"
     )
 
     logger.info(
@@ -860,37 +1100,29 @@ async def main():
         ", ".join(CHANNELS)
     )
 
-    while True:
+    logger.info(
+        "News interval: 30-60 minutes"
+    )
 
-        try:
+    logger.info(
+        "Trusted sources only"
+    )
 
-            await check_news()
+    logger.info(
+        "===================================="
+    )
 
-        except Exception as e:
-
-            logger.exception(
-                "Unexpected error: %s",
-                e
-            )
-
-        logger.info(
-            "Waiting 5 minutes..."
-        )
-
-        await __import__(
-            "asyncio"
-        ).sleep(
-            CHECK_INTERVAL
-        )
+    await asyncio.gather(
+        news_loop(),
+        live_loop()
+    )
 
 
-# =========================================================
-# START BOT
-# =========================================================
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
-
-    import asyncio
 
     try:
 
