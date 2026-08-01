@@ -901,7 +901,7 @@ async def send_news(item):
 
         save_json_list(
             SENT_TIMES_FILE,
-            sent    
+            sent   ) 
         save_json_list(
             SENT_TIMES_FILE,
             sent_times
