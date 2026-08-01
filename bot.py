@@ -1,5 +1,8 @@
+```python
 import os
 import asyncio
+import re
+import html
 import requests
 import feedparser
 
@@ -38,7 +41,7 @@ SOURCES_FILE = "sources.txt"
 # GROQ CLIENT
 # =========================
 
-client = Groq(api_key=GROQ_KEY)
+client = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
 
 
 # =========================
@@ -49,7 +52,11 @@ def get_sources():
 
     try:
 
-        with open(SOURCES_FILE, "r", encoding="utf-8") as file:
+        with open(
+            SOURCES_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
 
             return [
                 line.strip()
@@ -65,6 +72,54 @@ def get_sources():
 
 
 # =========================
+# CLEAN HTML
+# =========================
+
+def clean_html(text):
+
+    if not text:
+        return ""
+
+    try:
+
+        text = html.unescape(text)
+
+        text = re.sub(
+            r"<script.*?</script>",
+            "",
+            text,
+            flags=re.DOTALL | re.IGNORECASE
+        )
+
+        text = re.sub(
+            r"<style.*?</style>",
+            "",
+            text,
+            flags=re.DOTALL | re.IGNORECASE
+        )
+
+        text = re.sub(
+            r"<[^>]+>",
+            " ",
+            text
+        )
+
+        text = re.sub(
+            r"\s+",
+            " ",
+            text
+        )
+
+        return text.strip()
+
+    except Exception as e:
+
+        print("HTML clean error:", e)
+
+        return str(text).strip()
+
+
+# =========================
 # CHECK LIVERPOOL NEWS
 # =========================
 
@@ -72,13 +127,16 @@ def is_liverpool_news(text):
 
     keywords = [
         "Liverpool",
+        "Liverpool FC",
         "LFC",
         "Anfield",
         "Salah",
         "Mohamed Salah",
+        "Mohamed",
         "Van Dijk",
         "Virgil van Dijk",
         "Iraola",
+        "Andoni Iraola",
         "Arne Slot",
         "Slot",
         "Mac Allister",
@@ -87,16 +145,23 @@ def is_liverpool_news(text):
         "Szoboszlai",
         "Gakpo",
         "Nunez",
+        "Núñez",
         "Darwin Nunez",
+        "Darwin Núñez",
         "Luis Diaz",
+        "Luis Díaz",
         "Konate",
+        "Konaté",
         "Alisson",
         "Robertson",
+        "Andy Robertson",
         "Bradley",
+        "Conor Bradley",
         "Gravenberch",
         "Wirtz",
         "Ekitike",
-        "Leoni"
+        "Leoni",
+        "Giovanni Leoni"
     ]
 
     text = text.lower()
@@ -120,7 +185,11 @@ def get_last_news():
 
         try:
 
-            with open(NEWS_FILE, "r", encoding="utf-8") as file:
+            with open(
+                NEWS_FILE,
+                "r",
+                encoding="utf-8"
+            ) as file:
 
                 return file.read().strip()
 
@@ -135,7 +204,11 @@ def save_last_news(link):
 
     try:
 
-        with open(NEWS_FILE, "w", encoding="utf-8") as file:
+        with open(
+            NEWS_FILE,
+            "w",
+            encoding="utf-8"
+        ) as file:
 
             file.write(link)
 
@@ -145,10 +218,22 @@ def save_last_news(link):
 
 
 # =========================
-# TRANSLATE NEWS WITH GROQ
+# TRANSLATE NEWS
 # =========================
 
 def translate_news(news_text):
+
+    if not GROQ_KEY or client is None:
+
+        print("GROQ_API_KEY is missing")
+
+        return None
+
+    if not news_text.strip():
+
+        print("News text is empty")
+
+        return None
 
     try:
 
@@ -162,29 +247,63 @@ def translate_news(news_text):
                     "role": "system",
 
                     "content": """
-አንተ የLiverpool የዜና አርታኢ ነህ።
+አንተ የLiverpool FC የዜና አርታኢ ነህ።
 
-የተሰጠህን የLiverpool ዜና ወደ ተፈጥሯዊ፣
-ግልጽ እና ለTelegram የሚመች አማርኛ ቀይር።
+ከታች የተሰጠህን የእንግሊዝኛ
+Liverpool ዜና ወደ ተፈጥሯዊ፣
+ግልጽ እና ትክክለኛ አማርኛ ተርጉም።
 
-ደንቦች:
+አስፈላጊ ደንቦች:
 
-1. ከዜናው ውጭ ምንም አዲስ መረጃ አትጨምር።
+1. ርዕሱን ብቻ አትተርጉም።
+   ርዕሱን እና የተሰጠውን የዜና ይዘት
+   በሙሉ ተርጉም።
 
-2. የተጫዋቾችን፣ የአሰልጣኞችን እና የክለቦችን
+2. የዜናውን ትርጉም አትቀይር።
+
+3. ከተሰጠው ዜና ውጭ ምንም
+   አዲስ መረጃ አትጨምር።
+
+4. የተጫዋቾችን ስም አትቀይር።
+   ለምሳሌ:
+   Mohamed Salah
+   Virgil van Dijk
+   Florian Wirtz
+   Giovanni Leoni
+
+5. የክለቦችን እና የውድድሮችን
    ስም በትክክል ጠብቅ።
 
-3. የዜናውን ትርጉም አትቀይር።
+6. ቁጥሮች፣ ዋጋዎች፣ ቀናት፣
+   ውጤቶች እና ስታቲስቲክሶችን
+   አትቀይር።
 
-4. አጭር እና ማራኪ የTelegram ዜና ቅርጽ ተጠቀም።
+7. Liverpool → ሊቨርፑል
+   Premier League → ፕሪሚየር ሊግ
+   Champions League → ቻምፒየንስ ሊግ
+   transfer → ዝውውር
+   manager → አሰልጣኝ
+   friendly → የዝግጅት ጨዋታ
 
-5. ከርዕሱ በፊት 🔴 ወይም 🚨 ተጠቀም።
+8. ዜናውን ለTelegram ቻናል
+   የሚመች አማርኛ አድርግ።
 
-6. የሌለ ጥቅስ፣ ዋጋ፣ ቀን፣ ምንጭ ወይም
-   የተጫዋች መረጃ አትፍጠር።
+9. ርዕሱ ከሆነ በፊት 🔴 ወይም 🚨
+   መጠቀም ትችላለህ።
 
-7. የተሰጠው ዜና Liverpool ጋር የማይያያዝ
-   ከሆነ አትተርጉም።
+10. የሌለ ጥቅስ፣ የሌለ መረጃ፣
+    የሌለ ዋጋ ወይም የሌለ ዝርዝር
+    አትፍጠር።
+
+11. ከዜናው ውጭ ማብራሪያ
+    ወይም የራስህን አስተያየት
+    አትጨምር።
+
+12. የመጨረሻ ምላሽህ
+    የተተረጎመው የአማርኛ ዜና ብቻ ይሁን።
+
+13. እንግሊዝኛውን ዜና
+    እንዳለ አትድገም።
 """
                 },
 
@@ -196,16 +315,32 @@ def translate_news(news_text):
             ],
 
             temperature=0.1,
-            max_tokens=1000
+
+            max_tokens=2500
         )
 
-        return result.choices[0].message.content.strip()
+        translated = (
+            result.choices[0]
+            .message.content
+            .strip()
+        )
+
+        if not translated:
+
+            print("Groq returned empty translation")
+
+            return None
+
+        return translated
 
     except Exception as e:
 
-        print("Groq error:", e)
+        print(
+            "Groq translation error:",
+            e
+        )
 
-        return news_text
+        return None
 
 
 # =========================
@@ -216,11 +351,16 @@ def get_live_matches():
 
     if not API_KEY:
 
-        print("FOOTBALL_API_KEY is missing")
+        print(
+            "FOOTBALL_API_KEY is missing"
+        )
 
         return []
 
-    url = "https://v3.football.api-sports.io/fixtures?live=all"
+    url = (
+        "https://v3.football.api-sports.io/"
+        "fixtures?live=all"
+    )
 
     headers = {
         "x-apisports-key": API_KEY
@@ -240,19 +380,32 @@ def get_live_matches():
 
         matches = []
 
-        for game in data.get("response", []):
+        for game in data.get(
+            "response",
+            []
+        ):
 
             home = game["teams"]["home"]["name"]
 
             away = game["teams"]["away"]["name"]
 
-            if "Liverpool" in home or "Liverpool" in away:
+            if (
+                "Liverpool" in home
+                or "Liverpool" in away
+            ):
 
-                home_score = game["goals"]["home"]
+                home_score = (
+                    game["goals"]["home"]
+                )
 
-                away_score = game["goals"]["away"]
+                away_score = (
+                    game["goals"]["away"]
+                )
 
-                elapsed = game["fixture"]["status"].get("elapsed")
+                elapsed = (
+                    game["fixture"]["status"]
+                    .get("elapsed")
+                )
 
                 if elapsed:
 
@@ -271,13 +424,18 @@ def get_live_matches():
                         f"{away}"
                     )
 
-                matches.append(match_text)
+                matches.append(
+                    match_text
+                )
 
         return matches
 
     except Exception as e:
 
-        print("Football API error:", e)
+        print(
+            "Football API error:",
+            e
+        )
 
         return []
 
@@ -290,39 +448,69 @@ def get_image(item):
 
     try:
 
-        if hasattr(item, "media_content"):
+        if hasattr(
+            item,
+            "media_content"
+        ):
 
             if item.media_content:
 
-                url = item.media_content[0].get("url")
+                for media in item.media_content:
 
-                if url:
+                    url = media.get("url")
 
-                    return url
+                    if url:
+
+                        return url
 
 
-        if hasattr(item, "media_thumbnail"):
+        if hasattr(
+            item,
+            "media_thumbnail"
+        ):
 
             if item.media_thumbnail:
 
-                url = item.media_thumbnail[0].get("url")
+                for media in item.media_thumbnail:
 
-                if url:
+                    url = media.get("url")
 
-                    return url
+                    if url:
+
+                        return url
 
 
-        if hasattr(item, "enclosures"):
+        if hasattr(
+            item,
+            "enclosures"
+        ):
 
             for enclosure in item.enclosures:
 
-                if enclosure.get("type", "").startswith("image"):
+                image_type = (
+                    enclosure
+                    .get("type", "")
+                    .lower()
+                )
 
-                    return enclosure.get("href")
+                if image_type.startswith(
+                    "image"
+                ):
+
+                    url = enclosure.get(
+                        "href"
+                    )
+
+                    if url:
+
+                        return url
 
     except Exception as e:
 
-        print("Image error:", e)
+        print(
+            "Image error:",
+            e
+        )
 
     return None
 
@@ -335,95 +523,180 @@ async def send_news():
 
     sources = get_sources()
 
-    print("Sources:", sources)
+    print(
+        "Sources:",
+        sources
+    )
 
     if not sources:
 
-        print("No sources found")
+        print(
+            "No sources found"
+        )
 
         return
-
 
     old_news = get_last_news()
 
     latest = None
 
+    # =========================
+    # SEARCH RSS SOURCES
+    # =========================
 
     for source in sources:
 
         try:
 
-            feed = feedparser.parse(source)
+            feed = feedparser.parse(
+                source
+            )
 
         except Exception as e:
 
-            print("RSS error:", e)
+            print(
+                "RSS error:",
+                e
+            )
 
             continue
 
-
         for item in feed.entries:
 
-            link = getattr(item, "link", "")
+            link = getattr(
+                item,
+                "link",
+                ""
+            )
 
             if not link:
 
                 continue
 
-
             if link == old_news:
 
                 continue
 
+            title = clean_html(
+                getattr(
+                    item,
+                    "title",
+                    ""
+                )
+            )
 
-            title = getattr(item, "title", "")
+            summary = clean_html(
+                getattr(
+                    item,
+                    "summary",
+                    ""
+                )
+            )
 
-            summary = getattr(item, "summary", "")
+            content = (
+                f"{title} {summary}"
+            )
 
-            content = f"{title} {summary}"
-
-
-            if is_liverpool_news(content):
+            if is_liverpool_news(
+                content
+            ):
 
                 latest = item
 
                 break
 
-
         if latest:
 
             break
 
+    # =========================
+    # NO NEW NEWS
+    # =========================
 
     if not latest:
 
-        print("No new Liverpool news")
+        print(
+            "No new Liverpool news"
+        )
 
         return
 
-
     # =========================
-    # NEWS TEXT
+    # ORIGINAL NEWS
     # =========================
 
-    news_text = getattr(latest, "title", "")
+    title = clean_html(
+        getattr(
+            latest,
+            "title",
+            ""
+        )
+    )
 
-    summary = getattr(latest, "summary", "")
+    summary = clean_html(
+        getattr(
+            latest,
+            "summary",
+            ""
+        )
+    )
+
+    link = getattr(
+        latest,
+        "link",
+        ""
+    )
+
+    news_text = title
 
     if summary:
 
-        news_text += "\n\n" + summary
+        news_text += (
+            "\n\n" + summary
+        )
 
+    print(
+        "Found Liverpool news:"
+    )
 
-    translated = translate_news(news_text)
-
+    print(title)
 
     # =========================
-    # LIVE MATCH
+    # TRANSLATE
+    # =========================
+
+    print(
+        "Translating news..."
+    )
+
+    translated = translate_news(
+        news_text
+    )
+
+    # =========================
+    # NEVER SEND ENGLISH
+    # =========================
+
+    if not translated:
+
+        print(
+            "Translation failed."
+        )
+
+        print(
+            "English news will NOT "
+            "be sent to Telegram."
+        )
+
+        return
+
+    # =========================
+    # LIVE MATCHES
     # =========================
 
     live = get_live_matches()
 
+    live_text = ""
 
     if live:
 
@@ -433,29 +706,55 @@ async def send_news():
             + "\n".join(live)
         )
 
-    else:
+    # =========================
+    # SOURCE LINK
+    # =========================
 
-        live_text = ""
+    source_text = ""
 
+    if link:
+
+        source_text = (
+            "\n\n"
+            "🔗 ምንጭ: "
+            + link
+        )
 
     # =========================
     # FINAL MESSAGE
     # =========================
 
-    message = translated + live_text
-
+    message = (
+        translated
+        + live_text
+        + source_text
+    )
 
     # =========================
-    # TELEGRAM
+    # TELEGRAM TOKEN CHECK
     # =========================
 
-    bot = Bot(token=TOKEN)
+    if not TOKEN:
 
+        print(
+            "BOT_TOKEN is missing"
+        )
+
+        return
+
+    bot = Bot(
+        token=TOKEN
+    )
+
+    # =========================
+    # SEND TO CHANNELS
+    # =========================
 
     try:
 
-        image = get_image(latest)
-
+        image = get_image(
+            latest
+        )
 
         for channel in CHANNEL_IDS:
 
@@ -484,29 +783,35 @@ async def send_news():
                     )
 
                 print(
-                    f"Sent successfully to {channel}"
+                    f"Sent successfully "
+                    f"to {channel}"
                 )
-
 
             except Exception as e:
 
                 print(
-                    f"Telegram error for {channel}:",
-                    e
+                    f"Telegram error for "
+                    f"{channel}: {e}"
                 )
 
+        # =========================
+        # SAVE ONLY AFTER SEND
+        # =========================
 
         save_last_news(
-            getattr(latest, "link", "")
+            link
         )
 
-
-        print("News sent successfully")
-
+        print(
+            "News sent successfully"
+        )
 
     except Exception as e:
 
-        print("Telegram error:", e)
+        print(
+            "Telegram error:",
+            e
+        )
 
 
 # =========================
@@ -515,8 +820,10 @@ async def send_news():
 
 async def main():
 
-    print("Liverpool News Bot started 🚀")
-
+    print(
+        "Liverpool News Bot "
+        "started 🚀"
+    )
 
     while True:
 
@@ -526,19 +833,25 @@ async def main():
 
         except Exception as e:
 
-            print("Main loop error:", e)
+            print(
+                "Main loop error:",
+                e
+            )
 
+        print(
+            "Waiting 5 minutes..."
+        )
 
-        print("Waiting 5 minutes...")
-
-        await asyncio.sleep(300)
+        await asyncio.sleep(
+            300
+        )
 
 
 # =========================
-# START BOT
+# START
 # =========================
 
 if __name__ == "__main__":
 
     asyncio.run(main())
-
+```
