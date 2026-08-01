@@ -1017,10 +1017,13 @@ def translate_news(text, author):
         )
 
         
-translated = result.choices[0].message.content.strip()
+        translated = result.choices[0].message.content.strip()
 
-print("ORIGINAL:", text)
-print("TRANSLATED:", translated)
+        print("ORIGINAL:", text)
+        print("TRANSLATED:", translated)
+
+        # አማርኛ ካልመጣ ዜናውን አትላክ
+        amharic_count = sum(
 
 # አማርኛ ካልመጣ ዜናውን አትላክ
 amharic_count = sum(
