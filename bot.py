@@ -52,7 +52,6 @@ LIVERPOOL_TEAM_ID = 40
 NEWS_CHECK_EVERY = 10 * 60
 LIVE_CHECK_EVERY = 60
 
-# Do not accept news older than 60 minutes
 MAX_NEWS_AGE = 60 * 60
 
 SEEN_FILE = "seen_news.json"
@@ -60,7 +59,7 @@ LIVE_FILE = "live_seen.json"
 
 
 # =========================================================
-# ONLY 5 TRUSTED SOURCES
+# TRUSTED SOURCES
 # =========================================================
 
 TRUSTED_REPORTERS = [
@@ -84,10 +83,8 @@ OFFICIAL_ALIASES = [
 
 SEARCHES = [
 
-    # Liverpool official
     'site:liverpoolfc.com Liverpool',
 
-    # Four trusted journalists
     '"Liverpool" "Paul Joyce"',
     '"Liverpool" "David Ornstein"',
     '"Liverpool" "James Pearce"',
@@ -102,13 +99,13 @@ SEARCHES = [
 seen_news = set()
 live_seen = set()
 
+bot = None
+groq = None
+
 
 # =========================================================
 # CLIENTS
 # =========================================================
-
-bot = None
-groq = None
 
 if BOT_TOKEN:
     bot = Bot(token=BOT_TOKEN)
@@ -310,10 +307,12 @@ def detect_source(title, summary, source_name):
         f"{title} {summary} {source_name}"
     ).lower()
 
-    # Liverpool Official
+    source_lower = source_name.lower()
+
+    # Official Liverpool
     for alias in OFFICIAL_ALIASES:
 
-        if alias.lower() in source_name.lower():
+        if alias.lower() in source_lower:
 
             return "Liverpool FC Official"
 
@@ -507,18 +506,15 @@ def fetch_news_sync():
             if not title or not link:
                 continue
 
-            # Liverpool only
             if not is_liverpool_news(
                 title,
                 summary
             ):
                 continue
 
-            # Fresh news only
             if not is_fresh(entry):
                 continue
 
-            # Trusted source only
             source = detect_source(
                 title,
                 summary,
@@ -553,13 +549,14 @@ def fetch_news_sync():
 
                 "published_at":
                     get_timestamp(entry)
-
             })
 
-    # Newest first
     results.sort(
         key=lambda item:
-        item.get("published_at", 0),
+        item.get(
+            "published_at",
+            0
+        ),
         reverse=True
     )
 
@@ -574,7 +571,7 @@ async def fetch_news():
 
 
 # =========================================================
-# DUPLICATE NEWS FILTER
+# DUPLICATE FILTER
 # =========================================================
 
 def remove_duplicates(items):
@@ -608,13 +605,14 @@ def remove_duplicates(items):
                 break
 
         if not duplicate:
+
             unique.append(item)
 
     return unique
 
 
 # =========================================================
-# SHORT AMHARIC AI REPORT
+# AMHARIC AI
 # =========================================================
 
 def translate_news_sync(item):
@@ -623,30 +621,28 @@ def translate_news_sync(item):
         return None
 
     prompt = f"""
-በታች የተሰጠውን Liverpool FC ዜና
-ወደ ተፈጥሯዊ፣ ትክክለኛ እና ግልጽ
-የኢትዮጵያ አማርኛ ቀይር።
+የሚከተለውን የLiverpool FC ዜና
+ወደ ተፈጥሯዊ እና ግልጽ አማርኛ ቀይር።
 
-ዋና ደንቦች:
+ደንቦች:
 
-1. ዜናውን አጭር አድርግ።
-2. ዋናውን እውነታ ብቻ አስቀምጥ።
-3. ከምንጩ ውጭ መረጃ አትጨምር።
-4. ስም፣ ቁጥር፣ ዋጋ እና ቀን ካለ በትክክል ጠብቅ።
-5. ወሬ ከሆነ እንደ ወሬ አቅርብ።
-6. English headline አታስገባ።
-7. English paragraph አታስገባ።
-8. "LIVERPOOL NEWS" አታስገባ።
-9. "ምንጭ" አትጻፍ።
-10. @yegnaLiverpool አትጻፍ።
-11. የተጫዋች ስም ካልተጠቀሰ አትጨምር።
-12. የተሰጠውን ዜና አትድገም።
+- አጭር አድርግ።
+- ዋናውን እውነታ ብቻ አስቀምጥ።
+- ከተሰጠው መረጃ ውጭ ነገር አትፍጠር።
+- ስሞችን፣ ቁጥሮችን፣ ዋጋዎችን እና ቀኖችን በትክክል ጠብቅ።
+- ወሬ ከሆነ ወሬ መሆኑን ጠብቅ።
+- English headline አታስገባ።
+- English paragraph አታስገባ።
+- "LIVERPOOL NEWS" አትጻፍ።
+- "ምንጭ" አትጻፍ።
+- @yegnaLiverpool አትጻፍ።
+- የሌለውን ተጫዋች አትጨምር።
 
-የምትመልሰው JSON ብቻ ይሁን:
+JSON ብቻ መልስ:
 
 {{
-  "title": "አጭር የአማርኛ ርዕስ",
-  "body": "አጭር የአማርኛ ዜና"
+    "title": "የአማርኛ ርዕስ",
+    "body": "የአማርኛ ዜና"
 }}
 
 TITLE:
@@ -666,11 +662,8 @@ CONTENT:
 
                 {
                     "role": "system",
-                    "content": (
-                        "Write only a short, accurate "
-                        "Amharic Liverpool FC news report. "
-                        "Never invent facts."
-                    )
+                    "content":
+                    "Write accurate short Amharic Liverpool FC news."
                 },
 
                 {
@@ -699,17 +692,22 @@ CONTENT:
         data = json.loads(raw)
 
         title = clean_text(
-            data.get("title", "")
+            data.get(
+                "title",
+                ""
+            )
         )
 
         body = clean_text(
-            data.get("body", "")
+            data.get(
+                "body",
+                ""
+            )
         )
 
         if not title or not body:
             return None
 
-        # Must contain Amharic
         if not re.search(
             r"[\u1200-\u137F]",
             title + body
@@ -740,26 +738,22 @@ async def translate_news(item):
 
 
 # =========================================================
-# GET ORIGINAL ARTICLE IMAGE
-# IMPORTANT:
-# We DO NOT use Google News image.
-# We open the original article and get og:image.
+# ARTICLE URL RESOLVER
 # =========================================================
 
-def get_original_image(article_url):
+def resolve_article_url(url):
 
-    if not article_url:
+    if not url:
         return None
 
     try:
 
         response = requests.get(
-            article_url,
+            url,
             timeout=20,
             headers={
                 "User-Agent":
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 "
                 "Chrome/130 Safari/537.36"
             },
@@ -769,7 +763,352 @@ def get_original_image(article_url):
         if response.status_code != 200:
             return None
 
-        final_url = response.url
+        return response.url
+
+    except Exception as error:
+
+        logger.warning(
+            "URL resolve error: %s",
+            error
+        )
+
+        return None
+
+
+# =========================================================
+# IMAGE URL CLEANER
+# =========================================================
+
+def clean_image_url(url, base_url):
+
+    if not url:
+        return None
+
+    url = html.unescape(
+        url
+    ).strip()
+
+    url = url.replace(
+        "\\/",
+        "/"
+    )
+
+    if url.startswith("//"):
+
+        url = "https:" + url
+
+    return urljoin(
+        base_url,
+        url
+    )
+
+
+# =========================================================
+# FIND IMAGE IN JSON-LD
+# =========================================================
+
+def find_jsonld_images(page, base_url):
+
+    images = []
+
+    scripts = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>'
+        r'(.*?)'
+        r'</script>',
+        page,
+        re.IGNORECASE | re.DOTALL
+    )
+
+    for script in scripts:
+
+        try:
+
+            data = json.loads(
+                html.unescape(
+                    script.strip()
+                )
+            )
+
+        except Exception:
+            continue
+
+        objects = []
+
+        if isinstance(data, dict):
+
+            objects.append(data)
+
+            graph = data.get(
+                "@graph"
+            )
+
+            if isinstance(
+                graph,
+                list
+            ):
+
+                objects.extend(
+                    graph
+                )
+
+        elif isinstance(
+            data,
+            list
+        ):
+
+            objects.extend(
+                data
+            )
+
+        for obj in objects:
+
+            if not isinstance(
+                obj,
+                dict
+            ):
+                continue
+
+            image = obj.get(
+                "image"
+            )
+
+            if isinstance(
+                image,
+                str
+            ):
+
+                images.append(
+                    clean_image_url(
+                        image,
+                        base_url
+                    )
+                )
+
+            elif isinstance(
+                image,
+                dict
+            ):
+
+                value = image.get(
+                    "url"
+                )
+
+                if value:
+
+                    images.append(
+                        clean_image_url(
+                            value,
+                            base_url
+                        )
+                    )
+
+            elif isinstance(
+                image,
+                list
+            ):
+
+                for value in image:
+
+                    if isinstance(
+                        value,
+                        str
+                    ):
+
+                        images.append(
+                            clean_image_url(
+                                value,
+                                base_url
+                            )
+                        )
+
+                    elif isinstance(
+                        value,
+                        dict
+                    ):
+
+                        value = value.get(
+                            "url"
+                        )
+
+                        if value:
+
+                            images.append(
+                                clean_image_url(
+                                    value,
+                                    base_url
+                                )
+                            )
+
+    return [
+        image
+        for image in images
+        if image
+    ]
+
+
+# =========================================================
+# FIND ARTICLE IMAGES
+# =========================================================
+
+def find_article_images(page, base_url):
+
+    images = []
+
+    # -----------------------------------------------------
+    # 1. OG IMAGE
+    # -----------------------------------------------------
+
+    patterns = [
+
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
+
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+
+        r'<meta[^>]+property=["\']og:image:url["\'][^>]+content=["\']([^"\']+)',
+
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image:url["\']'
+    ]
+
+    for pattern in patterns:
+
+        matches = re.findall(
+            pattern,
+            page,
+            re.IGNORECASE
+        )
+
+        for match in matches:
+
+            image = clean_image_url(
+                match,
+                base_url
+            )
+
+            if image:
+                images.append(
+                    image
+                )
+
+
+    # -----------------------------------------------------
+    # 2. TWITTER IMAGE
+    # -----------------------------------------------------
+
+    twitter_patterns = [
+
+        r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)',
+
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']',
+
+        r'<meta[^>]+property=["\']twitter:image["\'][^>]+content=["\']([^"\']+)'
+    ]
+
+    for pattern in twitter_patterns:
+
+        matches = re.findall(
+            pattern,
+            page,
+            re.IGNORECASE
+        )
+
+        for match in matches:
+
+            image = clean_image_url(
+                match,
+                base_url
+            )
+
+            if image:
+                images.append(
+                    image
+                )
+
+
+    # -----------------------------------------------------
+    # 3. JSON-LD ARTICLE IMAGE
+    # -----------------------------------------------------
+
+    images.extend(
+        find_jsonld_images(
+            page,
+            base_url
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # 4. ARTICLE / MAIN IMAGE
+    # -----------------------------------------------------
+
+    article_patterns = [
+
+        r'<article[^>]*>.*?<img[^>]+src=["\']([^"\']+)',
+
+        r'<main[^>]*>.*?<img[^>]+src=["\']([^"\']+)',
+
+        r'<img[^>]+class=["\'][^"\']*(?:featured|hero|article|post)[^"\']*["\'][^>]+src=["\']([^"\']+)',
+
+        r'<img[^>]+src=["\']([^"\']+)[^>]+class=["\'][^"\']*(?:featured|hero|article|post)[^"\']*["\']'
+    ]
+
+    for pattern in article_patterns:
+
+        matches = re.findall(
+            pattern,
+            page,
+            re.IGNORECASE | re.DOTALL
+        )
+
+        for match in matches[:5]:
+
+            image = clean_image_url(
+                match,
+                base_url
+            )
+
+            if image:
+                images.append(
+                    image
+                )
+
+
+    # -----------------------------------------------------
+    # REMOVE DUPLICATES
+    # -----------------------------------------------------
+
+    unique = []
+
+    for image in images:
+
+        if image not in unique:
+
+            unique.append(
+                image
+            )
+
+    return unique
+
+
+# =========================================================
+# CHECK IMAGE URL
+# =========================================================
+
+def check_image_url(image_url):
+
+    if not image_url:
+        return False
+
+    try:
+
+        response = requests.get(
+            image_url,
+            timeout=15,
+            headers={
+                "User-Agent":
+                "Mozilla/5.0"
+            },
+            stream=True
+        )
 
         content_type = (
             response.headers
@@ -780,39 +1119,111 @@ def get_original_image(article_url):
             .lower()
         )
 
-        if "text/html" not in content_type:
+        return (
+            response.status_code == 200
+            and "image/" in content_type
+        )
+
+    except Exception:
+
+        return False
+
+
+# =========================================================
+# GET ARTICLE IMAGE
+#
+# IMPORTANT:
+# This function takes the image FROM THE ORIGINAL ARTICLE.
+# It does NOT use Google News thumbnail.
+# =========================================================
+
+def get_original_image(article_url):
+
+    if not article_url:
+        return None
+
+    try:
+
+        final_url = resolve_article_url(
+            article_url
+        )
+
+        if not final_url:
+            final_url = article_url
+
+        logger.info(
+            "Original article: %s",
+            final_url
+        )
+
+        response = requests.get(
+            final_url,
+            timeout=25,
+            headers={
+                "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "Chrome/130 Safari/537.36",
+                "Accept":
+                "text/html,application/xhtml+xml"
+            },
+            allow_redirects=True
+        )
+
+        if response.status_code != 200:
+            return None
+
+        content_type = (
+            response.headers
+            .get(
+                "content-type",
+                ""
+            )
+            .lower()
+        )
+
+        if (
+            "text/html" not in content_type
+            and "application/xhtml" not in content_type
+        ):
             return None
 
         page = response.text
 
-        # og:image
-        patterns = [
+        images = find_article_images(
+            page,
+            response.url
+        )
 
-            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
-            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+        if not images:
 
-            r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)',
-            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']'
-        ]
-
-        for pattern in patterns:
-
-            match = re.search(
-                pattern,
-                page,
-                re.IGNORECASE
+            logger.warning(
+                "No article image found."
             )
 
-            if match:
+            return None
 
-                image_url = html.unescape(
-                    match.group(1)
-                ).strip()
+        # -------------------------------------------------
+        # Try each candidate.
+        # First valid article image wins.
+        # -------------------------------------------------
 
-                return urljoin(
-                    final_url,
+        for image_url in images:
+
+            if check_image_url(
+                image_url
+            ):
+
+                logger.info(
+                    "🖼️ Article image found: %s",
                     image_url
                 )
+
+                return image_url
+
+        logger.warning(
+            "Article images found, but none were downloadable."
+        )
 
     except Exception as error:
 
@@ -837,7 +1248,7 @@ def download_image(url):
 
         response = requests.get(
             url,
-            timeout=20,
+            timeout=25,
             headers={
                 "User-Agent":
                 "Mozilla/5.0"
@@ -862,15 +1273,23 @@ def download_image(url):
         extension = ".jpg"
 
         if "png" in content_type:
+
             extension = ".png"
 
         elif "webp" in content_type:
+
             extension = ".webp"
 
+        elif "jpeg" in content_type:
+
+            extension = ".jpg"
+
         filename = (
-            "news_"
+            "liverpool_news_"
             + hashlib.md5(
-                url.encode()
+                url.encode(
+                    "utf-8"
+                )
             ).hexdigest()
             + extension
         )
@@ -902,42 +1321,7 @@ def download_image(url):
 
 
 # =========================================================
-# LINE-UP DETECTION
-# =========================================================
-
-def is_lineup_news(item):
-
-    # ONLY official Liverpool source
-    if item["source"] != "Liverpool FC Official":
-        return False
-
-    text = (
-        item["title"]
-        + " "
-        + item["summary"]
-    ).lower()
-
-    lineup_words = [
-
-        "lineup",
-        "line-up",
-        "starting xi",
-        "starting 11",
-        "starting eleven",
-        "team news",
-        "confirmed team",
-        "teamsheet",
-        "team sheet"
-    ]
-
-    return any(
-        word in text
-        for word in lineup_words
-    )
-
-
-# =========================================================
-# TELEGRAM NEWS FORMAT
+# TELEGRAM FORMAT
 # =========================================================
 
 def make_news_message(
@@ -959,6 +1343,9 @@ def make_news_message(
 # =========================================================
 
 async def send_news(item):
+
+    if not bot:
+        return False
 
     ai = await translate_news(
         item
@@ -982,7 +1369,10 @@ async def send_news(item):
         item["source"]
     )
 
-    # Always use ORIGINAL ARTICLE image.
+    # -----------------------------------------------------
+    # GET IMAGE FROM ORIGINAL ARTICLE
+    # -----------------------------------------------------
+
     image_url = await asyncio.to_thread(
         get_original_image,
         item["link"]
@@ -998,6 +1388,10 @@ async def send_news(item):
         )
 
     try:
+
+        # -------------------------------------------------
+        # WITH ARTICLE IMAGE
+        # -------------------------------------------------
 
         if image_file:
 
@@ -1034,7 +1428,16 @@ async def send_news(item):
                         disable_web_page_preview=True
                     )
 
+        # -------------------------------------------------
+        # NO IMAGE
+        # -------------------------------------------------
+
         else:
+
+            logger.warning(
+                "⚠️ No matching article image. "
+                "Sending text only."
+            )
 
             await bot.send_message(
                 chat_id=CHANNEL_ID,
@@ -1043,7 +1446,8 @@ async def send_news(item):
                 disable_web_page_preview=True
             )
 
-        # Save only after successful Telegram send
+        # Save only AFTER successful send
+
         seen_news.add(
             item["id"]
         )
@@ -1276,7 +1680,6 @@ async def check_live_match():
         if not fixture_id:
             continue
 
-        # Detect score/status changes
         state_key = (
             f"{fixture_id}|"
             f"{home_score}|"
@@ -1287,17 +1690,8 @@ async def check_live_match():
         if state_key in live_seen:
             continue
 
-        live_seen.add(
-            state_key
-        )
-
-        save_list(
-            LIVE_FILE,
-            live_seen
-        )
-
-        # Goal alert
-        old_score_keys = [
+        # Check whether a previous state existed
+        previous_states = [
             key
             for key in live_seen
             if key.startswith(
@@ -1306,8 +1700,20 @@ async def check_live_match():
         ]
 
         is_goal = len(
-            old_score_keys
-        ) > 1
+            previous_states
+        ) > 0 and (
+            home_score is not None
+            or away_score is not None
+        )
+
+        live_seen.add(
+            state_key
+        )
+
+        save_list(
+            LIVE_FILE,
+            live_seen
+        )
 
         if is_goal:
 
@@ -1413,15 +1819,15 @@ async def main():
     )
 
     logger.info(
-        "📰 5 trusted sources only"
+        "📰 Trusted Liverpool sources"
     )
 
     logger.info(
-        "🇪🇹 Short Amharic news"
+        "🇪🇹 Amharic news"
     )
 
     logger.info(
-        "🖼️ Original article images only"
+        "🖼️ Matching original article images"
     )
 
     logger.info(
