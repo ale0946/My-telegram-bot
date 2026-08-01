@@ -49,9 +49,11 @@ logger = logging.getLogger(__name__)
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is missing")
 
-if not CHANNEL_ID:
-    raise ValueError("CHANNEL_ID is missing")
 
+CHANNEL_IDS = [
+    "@yegnaLiverpool",
+    "@yegnaLiverpoolET"
+]
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY is missing")
 
