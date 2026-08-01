@@ -960,13 +960,83 @@ NO
 # TRANSLATE NEWS
 # =========================================================
 
-def translate_news(
-    text,
-    author
-):
+def translate_news(text, author):
 
     if not client:
+        print("GROQ_API_KEY is missing")
+        return None
 
+    try:
+
+        result = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+አንተ የLiverpool FC ዜና ወደ አማርኛ የምትተረጉም አርታኢ ነህ።
+
+የተሰጠህን የእንግሊዝኛ ዜና በተፈጥሯዊ፣
+ግልጽ እና ትክክለኛ አማርኛ ተርጉም።
+
+አስፈላጊ ህጎች:
+
+- የመጨረሻው ውጤት 100% በአማርኛ መሆን አለበት።
+- የእንግሊዝኛውን ርዕስ በEnglish አትመልስ።
+- የዜናውን ትርጉም አትቀይር።
+- ከተሰጠው ዜና ውጭ መረጃ አትጨምር።
+- የተጫዋቾችን ስም እንዳለ ጠብቅ።
+- የክለቦችን ስም እንዳለ ጠብቅ።
+- Liverpool ን እንደ "ሊቨርፑል" መጻፍ ትችላለህ።
+- ለTelegram የሚመች አጭር የዜና ቅርጽ ተጠቀም።
+- በመጀመሪያ 🔴 ወይም 🚨 አስቀምጥ።
+- ምንጩን ወይም የX ሊንክን አትጨምር።
+- ማብራሪያ አትስጥ።
+- "Here is the translation" ወይም ተመሳሳይ English ሀረግ አትጠቀም።
+
+በጣም አስፈላጊ:
+የመጨረሻው መልስ አማርኛ ዜና ብቻ ይሁን።
+"""
+                },
+
+                {
+                    "role": "user",
+                    "content": f"""
+ምንጭ: {author}
+
+የሚተረጎመው ዜና:
+
+{text}
+"""
+                }
+            ],
+
+            temperature=0.1,
+            max_tokens=1000
+        )
+
+        translated = result.choices[0].message.content.strip()
+
+        # አማርኛ ካልመጣ ዜናውን አትላክ
+        amharic_count = sum(
+            1 for char in translated
+            if "\u1200" <= char <= "\u137F"
+        )
+
+        if amharic_count < 10:
+
+            print("Translation is NOT Amharic. News skipped.")
+
+            return None
+
+        return translated
+
+    except Exception as e:
+
+        print("Groq translation error:", e)
+
+        # English news እንዳይለቀቅ
         return None
 
 
