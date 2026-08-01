@@ -45,10 +45,10 @@ format="%(asctime)s | %(levelname)s | %(message)s"
 logger = logging.getLogger("liverpool_bot")
 
 if not BOT_TOKEN:
-raise ValueError("BOT_TOKEN is missing")
+    raise ValueError("BOT_TOKEN is missing")
 
 if not GROQ_API_KEY:
-raise ValueError("GROQ_API_KEY is missing")
+    raise ValueError("GROQ_API_KEY is missing")
 
 bot = Bot(token=BOT_TOKEN)
 groq = Groq(api_key=GROQ_API_KEY)
