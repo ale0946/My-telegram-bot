@@ -384,3 +384,180 @@ def detect_source(
                 return trusted
 
     return None
+# =========================================================
+# GOOGLE NEWS RSS
+# =========================================================
+
+def get_google_news(query):
+
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote_plus(query)}"
+        "&hl=en-US"
+        "&gl=US"
+        "&ceid=US:en"
+    )
+
+    try:
+
+        response = requests.get(
+            url,
+            timeout=20,
+            headers={
+                "User-Agent":
+                "Mozilla/5.0 LiverpoolNewsBot/7.0"
+            }
+        )
+
+        response.raise_for_status()
+
+        return feedparser.parse(
+            response.content
+        )
+
+    except Exception as error:
+
+        logger.error(
+            "Google News RSS error: %s",
+            error
+        )
+
+        return None
+
+
+# =========================================================
+# NEWS ID
+# =========================================================
+
+def make_news_id(
+    title,
+    source
+):
+
+    value = (
+        normalize(title)
+        + "|"
+        + normalize(source)
+    )
+
+    return hashlib.sha256(
+        value.encode("utf-8")
+    ).hexdigest()
+
+
+# =========================================================
+# FETCH NEWS
+# =========================================================
+
+def fetch_news_sync():
+
+    collected = []
+
+    for query in SEARCHES:
+
+        logger.info(
+            "Searching: %s",
+            query
+        )
+
+        feed = get_google_news(
+            query
+        )
+
+        if not feed:
+            continue
+
+        for entry in feed.entries[:15]:
+
+            title = clean_text(
+                getattr(
+                    entry,
+                    "title",
+                    ""
+                )
+            )
+
+            summary = clean_text(
+                getattr(
+                    entry,
+                    "summary",
+                    ""
+                )
+            )
+
+            link = clean_text(
+                getattr(
+                    entry,
+                    "link",
+                    ""
+                )
+            )
+
+            source_obj = getattr(
+                entry,
+                "source",
+                None
+            )
+
+            source_name = ""
+
+            if source_obj:
+
+                source_name = clean_text(
+                    getattr(
+                        source_obj,
+                        "title",
+                        ""
+                    )
+                )
+
+            if not title or not link:
+                continue
+
+            if not is_liverpool_news(
+                title,
+                summary
+            ):
+                continue
+
+            trusted = detect_source(
+                title,
+                summary,
+                source_name
+            )
+
+            if not trusted:
+                continue
+
+            news_id = make_news_id(
+                title,
+                trusted
+            )
+
+            if news_id in seen_news:
+                continue
+
+            collected.append({
+
+                "id": news_id,
+
+                "title": title,
+
+                "summary": summary,
+
+                "link": link,
+
+                "source": trusted,
+
+                "source_name": source_name
+
+            })
+
+    return collected
+
+
+async def fetch_news():
+
+    return await asyncio.to_thread(
+        fetch_news_sync
+    )
