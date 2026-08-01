@@ -902,3 +902,229 @@ async def send_news(item):
         save_json_list(
             SENT_TIMES_FILE,
             sent    
+        save_json_list(
+            SENT_TIMES_FILE,
+            sent_times
+        )
+
+        return True
+
+    except Exception as error:
+
+        logger.error(
+            "❌ Telegram send error: %s",
+            error
+        )
+
+        return False
+
+
+# =========================================================
+# NEWS SEND LIMIT
+# =========================================================
+
+def can_send_news():
+
+    global sent_times
+
+    now = time.time()
+
+    sent_times = [
+        timestamp
+        for timestamp in sent_times
+        if now - timestamp < 30 * 60
+    ]
+
+    if len(sent_times) >= MAX_NEWS_PER_30_MIN:
+
+        logger.info(
+            "30-minute news limit reached."
+        )
+
+        return False
+
+    if sent_times:
+
+        elapsed = (
+            now - sent_times[-1]
+        )
+
+        if elapsed < MIN_NEWS_GAP:
+
+            logger.info(
+                "Waiting before next news."
+            )
+
+            return False
+
+    return True
+   # =========================================================
+# NEWS LOOP
+# =========================================================
+
+async def news_loop():
+
+    while True:
+
+        try:
+
+            if not can_send_news():
+
+                await asyncio.sleep(
+                    NEWS_CHECK_EVERY
+                )
+
+                continue
+
+            logger.info(
+                "🔎 Checking for new Liverpool news..."
+            )
+
+            news = await fetch_news()
+
+            if not news:
+
+                logger.info(
+                    "No new news found."
+                )
+
+                await asyncio.sleep(
+                    NEWS_CHECK_EVERY
+                )
+
+                continue
+
+            news = remove_duplicates(
+                news
+            )
+
+            logger.info(
+                "Found %s new articles.",
+                len(news)
+            )
+
+            sent = False
+
+            for item in news:
+
+                if not can_send_news():
+                    break
+
+                success = await send_news(
+                    item
+                )
+
+                if success:
+
+                    sent = True
+
+                    logger.info(
+                        "✅ News successfully sent."
+                    )
+
+                    break
+
+            if not sent:
+
+                logger.info(
+                    "No article was sent."
+                )
+
+            await asyncio.sleep(
+                NEWS_CHECK_EVERY
+            )
+
+        except Exception as error:
+
+            logger.exception(
+                "❌ News loop error: %s",
+                error
+            )
+
+            await asyncio.sleep(
+                NEWS_CHECK_EVERY
+            )
+
+
+# =========================================================
+# START BOT
+# =========================================================
+
+async def main():
+
+    if not BOT_TOKEN:
+
+        logger.error(
+            "❌ BOT_TOKEN is missing."
+        )
+
+        return
+
+    if not GROQ_API_KEY:
+
+        logger.error(
+            "❌ GROQ_API_KEY is missing."
+        )
+
+        return
+
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "🔴 Liverpool Amharic News Bot"
+    )
+
+    logger.info(
+        "✅ Bot started successfully"
+    )
+
+    logger.info(
+        "📢 Channel: %s",
+        CHANNEL_ID
+    )
+
+    logger.info(
+        "📰 News check: every 5 minutes"
+    )
+
+    logger.info(
+        "🇪🇹 Amharic translation: ON"
+    )
+
+    logger.info(
+        "🔁 Duplicate protection: ON"
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    await news_loop()
+
+
+# =========================================================
+# RUN
+# =========================================================
+
+if __name__ == "__main__":
+
+    try:
+
+        asyncio.run(
+            main()
+        )
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "🛑 Bot stopped."
+        )
+
+    except Exception as error:
+
+        logger.exception(
+            "Fatal error: %s",
+            error
+        ) 
