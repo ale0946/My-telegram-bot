@@ -1016,19 +1016,23 @@ def translate_news(text, author):
             max_tokens=1000
         )
 
-        translated = result.choices[0].message.content.strip()
+        
+translated = result.choices[0].message.content.strip()
 
-        # አማርኛ ካልመጣ ዜናውን አትላክ
-        amharic_count = sum(
-            1 for char in translated
-            if "\u1200" <= char <= "\u137F"
-        )
+print("ORIGINAL:", text)
+print("TRANSLATED:", translated)
 
-        if amharic_count < 10:
+# አማርኛ ካልመጣ ዜናውን አትላክ
+amharic_count = sum(
+    1 for char in translated
+    if "\u1200" <= char <= "\u137F"
+)
 
-            print("Translation is NOT Amharic. News skipped.")
+if amharic_count < 10:
 
-            return None
+    print("Translation is NOT Amharic. News skipped.")
+
+    return None
 
         return translated
 
