@@ -45,27 +45,32 @@ groq = Groq(api_key=GROQ_API_KEY)
 
 RSS_FEEDS = [
     {
-        "name": "Liverpool FC",
-        "url": "https://www.liverpoolfc.com/news",
-    },
-
-    {
-        "name": "Google News - Liverpool FC",
+        "name": "Liverpool FC News",
         "url": (
             "https://news.google.com/rss/search?"
-            "q=Liverpool+FC&hl=en-GB&gl=GB&ceid=GB:en"
+            "q=site%3Aliverpoolfc.com+Liverpool&"
+            "hl=en-GB&gl=GB&ceid=GB:en"
         ),
     },
 
     {
-        "name": "Google News - Liverpool Transfer",
+        "name": "Liverpool News",
         "url": (
             "https://news.google.com/rss/search?"
-            "q=Liverpool+transfer&hl=en-GB&gl=GB&ceid=GB:en"
+            "q=Liverpool+FC&"
+            "hl=en-GB&gl=GB&ceid=GB:en"
+        ),
+    },
+
+    {
+        "name": "Liverpool Transfers",
+        "url": (
+            "https://news.google.com/rss/search?"
+            "q=Liverpool+transfer&"
+            "hl=en-GB&gl=GB&ceid=GB:en"
         ),
     },
 ]
-
 
 # =========================================================
 # FILE / HISTORY
@@ -474,13 +479,16 @@ async def news_loop():
             # በአንድ check አንድ ዜና ብቻ
             # እንዳይጨናነቅ Telegram
             if news_list:
+    print(f"📰 Sending: {news_list[0]['title']}")
 
-                latest_news = news_list[0]
+    success = await send_news(news_list[0])
 
-                await send_news(
-                    latest_news
-                )
-
+    if success:
+        print("✅ News sent to Telegram!")
+    else:
+        print("❌ Failed to send news to Telegram!")
+else:
+    print("⏭️ No new Liverpool news found.")
         except Exception as e:
             print(
                 f"Main loop error: {e}"
