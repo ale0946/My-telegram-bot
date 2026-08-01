@@ -1,4 +1,5 @@
-python-telegram-bot
 requests
 feedparser
+beautifulsoup4
 groq
+python-telegram-bot
