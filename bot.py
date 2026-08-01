@@ -52,19 +52,29 @@ LIVERPOOL_TEAM_ID = 40
 # SETTINGS
 # =========================================================
 
-NEWS_CHECK_EVERY = 5 * 60
+# 15 minutes
+NEWS_CHECK_EVERY = 15 * 60
+
+# Live matches every 2 minutes
 LIVE_CHECK_EVERY = 2 * 60
 
+# Only accept very recent news.
+# This prevents old RSS articles from being posted.
+MAX_NEWS_AGE = 45 * 60
+
+# Maximum 2 important news posts in 30 minutes
 MAX_NEWS_PER_30_MIN = 2
+
+# Minimum gap between news posts
 MIN_NEWS_GAP = 15 * 60
 
-SEEN_FILE = "seen_news_v3.json"
-SENT_TIMES_FILE = "sent_times_v3.json"
-LIVE_SEEN_FILE = "live_seen_v3.json"
+SEEN_FILE = "seen_news_v4.json"
+SENT_TIMES_FILE = "sent_times_v4.json"
+LIVE_SEEN_FILE = "live_seen_v4.json"
 
 
 # =========================================================
-# TRUSTED SOURCES
+# TRUSTED SOURCES ONLY
 # =========================================================
 
 TRUSTED_SOURCES = {
@@ -110,30 +120,148 @@ SEARCHES = [
     '"Liverpool FC"',
 
     '"Liverpool" "Paul Joyce"',
-
     '"Liverpool" "David Ornstein"',
-
     '"Liverpool" "James Pearce"',
-
     '"Liverpool" "Lewis Steele"',
-
     '"Liverpool" "Melissa Reddy"',
-
     '"Liverpool" "Fabrizio Romano"',
 
     '"Liverpool FC" transfer',
+    '"Liverpool FC" signing',
+    '"Liverpool FC" deal',
+    '"Liverpool FC" agreement',
+    '"Liverpool FC" bid',
 
     '"Liverpool FC" injury',
+    '"Liverpool FC" injured',
+    '"Liverpool FC" returns',
+    '"Liverpool FC" unavailable',
 
     '"Liverpool FC" manager',
-
-    '"Liverpool FC" signing',
-
     '"Liverpool FC" contract',
+    '"Liverpool FC" official',
 
-    '"Liverpool FC" training',
+    '"Liverpool FC" Champions League',
+    '"Liverpool FC" Premier League',
 
-    '"Liverpool FC" interview'
+    '"Liverpool FC" result',
+    '"Liverpool FC" match'
+]
+
+
+# =========================================================
+# IMPORTANT NEWS KEYWORDS
+# =========================================================
+
+IMPORTANT_KEYWORDS = [
+
+    # Transfers
+    "transfer",
+    "signing",
+    "signed",
+    "signs",
+    "deal",
+    "agreement",
+    "agreed",
+    "bid",
+    "offer",
+    "fee",
+    "medical",
+    "contract",
+    "renew",
+    "renewal",
+    "departure",
+    "leaves",
+    "exit",
+    "joins",
+    "join",
+
+    # Injuries / availability
+    "injury",
+    "injured",
+    "fitness",
+    "fit",
+    "returns",
+    "return",
+    "out",
+    "ruled out",
+    "unavailable",
+    "doubt",
+    "sidelined",
+    "surgery",
+
+    # Manager / club
+    "manager",
+    "coach",
+    "appointed",
+    "appointment",
+    "official",
+    "confirmed",
+    "confirmation",
+
+    # Competition
+    "champions league",
+    "premier league",
+    "fa cup",
+    "league cup",
+    "carabao cup",
+    "draw",
+    "fixture",
+
+    # Match
+    "match",
+    "win",
+    "won",
+    "loss",
+    "lost",
+    "defeat",
+    "score",
+    "goal",
+
+    # Major player news
+    "salah",
+    "van dijk",
+    "wirtz",
+    "mac allister",
+    "szoboszlai",
+    "alisson",
+    "gakpo",
+    "konate",
+    "gravenberch",
+    "jacquet",
+    "leoni",
+    "bajcetic",
+    "endo"
+]
+
+
+# =========================================================
+# ROUTINE / LOW-IMPORTANCE KEYWORDS
+# =========================================================
+
+LOW_IMPORTANCE_KEYWORDS = [
+
+    "visit",
+    "visited",
+    "photos",
+    "gallery",
+    "behind the scenes",
+    "training",
+    "training session",
+    "interview",
+    "quiz",
+    "fun",
+    "challenge",
+    "throwback",
+    "social media",
+    "instagram",
+    "tiktok",
+    "youtube",
+    "birthday",
+    "merchandise",
+    "shirt",
+    "kit",
+    "commercial"
 ]
 
 
@@ -150,13 +278,14 @@ sent_times = []
 # CLIENTS
 # =========================================================
 
-bot = Bot(
-    token=BOT_TOKEN
-)
+bot = None
+groq = None
 
-groq = Groq(
-    api_key=GROQ_API_KEY
-)
+if BOT_TOKEN:
+    bot = Bot(token=BOT_TOKEN)
+
+if GROQ_API_KEY:
+    groq = Groq(api_key=GROQ_API_KEY)
 
 
 # =========================================================
@@ -260,7 +389,6 @@ for value in load_json_list(
             )
 
     except Exception:
-
         continue
 
 
@@ -342,10 +470,7 @@ def similarity(first, second):
 # LIVERPOOL FILTER
 # =========================================================
 
-def is_liverpool_news(
-    title,
-    summary
-):
+def is_liverpool_news(title, summary):
 
     text = (
         f"{title} {summary}"
@@ -375,13 +500,78 @@ def is_liverpool_news(
 
         "giovanni leoni",
         "jeremy jacquet",
-        "bradley barcola"
+        "bradley barcola",
+
+        "stefan bajcetic",
+        "wataru endo"
     ]
 
     return any(
         keyword in text
         for keyword in keywords
     )
+
+
+# =========================================================
+# IMPORTANT NEWS FILTER
+# =========================================================
+
+def is_important_news(title, summary):
+
+    text = (
+        f"{title} {summary}"
+    ).lower()
+
+    important = any(
+        keyword in text
+        for keyword in IMPORTANT_KEYWORDS
+    )
+
+    if not important:
+        return False
+
+    low_importance = any(
+        keyword in text
+        for keyword in LOW_IMPORTANCE_KEYWORDS
+    )
+
+    # If a story is only routine content, reject it.
+    strong_keywords = [
+        "transfer",
+        "signing",
+        "deal",
+        "agreement",
+        "bid",
+        "offer",
+        "injury",
+        "injured",
+        "ruled out",
+        "unavailable",
+        "returns",
+        "contract",
+        "official",
+        "confirmed",
+        "appointed",
+        "champions league",
+        "premier league",
+        "draw",
+        "fixture",
+        "win",
+        "won",
+        "loss",
+        "lost",
+        "defeat"
+    ]
+
+    strong = any(
+        keyword in text
+        for keyword in strong_keywords
+    )
+
+    if low_importance and not strong:
+        return False
+
+    return True
 
 
 # =========================================================
@@ -394,21 +584,110 @@ def detect_source(
     source_name
 ):
 
-    text = (
-        f"{title} "
-        f"{summary} "
-        f"{source_name}"
+    title_summary = (
+        f"{title} {summary}"
     ).lower()
 
-    for trusted, aliases in TRUSTED_SOURCES.items():
+    source_lower = (
+        source_name or ""
+    ).lower()
 
-        for alias in aliases:
+    # Official Liverpool source
+    if any(
+        alias.lower() in source_lower
+        for alias in TRUSTED_SOURCES[
+            "Liverpool FC Official"
+        ]
+    ):
 
-            if alias.lower() in text:
+        return "Liverpool FC Official"
 
-                return trusted
+    # Reporters
+    for reporter in [
+        "Paul Joyce",
+        "David Ornstein",
+        "James Pearce",
+        "Lewis Steele",
+        "Melissa Reddy",
+        "Fabrizio Romano"
+    ]:
+
+        if reporter.lower() in title_summary:
+
+            return reporter
 
     return None
+
+
+# =========================================================
+# DATE / FRESHNESS
+# =========================================================
+
+def get_entry_timestamp(entry):
+
+    for field in [
+        "published_parsed",
+        "updated_parsed"
+    ]:
+
+        parsed = getattr(
+            entry,
+            field,
+            None
+        )
+
+        if parsed:
+
+            try:
+
+                return time.mktime(
+                    parsed
+                )
+
+            except Exception:
+                pass
+
+    return None
+
+
+def is_fresh_news(entry):
+
+    published_at = get_entry_timestamp(
+        entry
+    )
+
+    if published_at is None:
+
+        logger.info(
+            "Rejected article with no publication time."
+        )
+
+        return False
+
+    now = time.time()
+
+    age = now - published_at
+
+    # Reject future timestamps that are clearly wrong.
+    if age < -10 * 60:
+
+        logger.info(
+            "Rejected article with invalid future date."
+        )
+
+        return False
+
+    # MAIN OLD NEWS PROTECTION
+    if age > MAX_NEWS_AGE:
+
+        logger.info(
+            "Rejected old article: %.1f minutes old.",
+            age / 60
+        )
+
+        return False
+
+    return True
 
 
 # =========================================================
@@ -432,7 +711,7 @@ def get_google_news(query):
             timeout=20,
             headers={
                 "User-Agent":
-                "Mozilla/5.0 LiverpoolNewsBot/10.0"
+                "Mozilla/5.0 LiverpoolNewsBot/11.0"
             }
         )
 
@@ -462,24 +741,12 @@ def make_news_id(
     source
 ):
 
-    normalized_title = normalize(
-        title
-    )
-
-    normalized_summary = normalize(
-        summary
-    )
-
-    normalized_source = normalize(
-        source
-    )
-
     value = (
-        normalized_title
+        normalize(title)
         + "|"
-        + normalized_summary[:1000]
+        + normalize(summary)[:1200]
         + "|"
-        + normalized_source
+        + normalize(source)
     )
 
     return hashlib.sha256(
@@ -556,9 +823,29 @@ def fetch_news_sync():
             if not title or not link:
                 continue
 
+            # Liverpool only
             if not is_liverpool_news(
                 title,
                 summary
+            ):
+                continue
+
+            # Important news only
+            if not is_important_news(
+                title,
+                summary
+            ):
+
+                logger.info(
+                    "Rejected non-important news: %s",
+                    title
+                )
+
+                continue
+
+            # NEW: reject old news
+            if not is_fresh_news(
+                entry
             ):
                 continue
 
@@ -571,7 +858,7 @@ def fetch_news_sync():
             if not trusted:
 
                 logger.info(
-                    "Rejected source: %s",
+                    "Rejected untrusted source: %s",
                     source_name
                 )
 
@@ -600,9 +887,21 @@ def fetch_news_sync():
 
                 "source_name": source_name,
 
-                "entry": entry
+                "entry": entry,
+
+                "published_at":
+                    get_entry_timestamp(
+                        entry
+                    )
 
             })
+
+    # Newest first
+    collected.sort(
+        key=lambda x:
+        x.get("published_at", 0),
+        reverse=True
+    )
 
     return collected
 
@@ -638,7 +937,7 @@ def remove_duplicates(items):
                 old["summary"]
             )
 
-            if title_score >= 0.60:
+            if title_score >= 0.58:
 
                 duplicate = True
                 break
@@ -646,7 +945,7 @@ def remove_duplicates(items):
             if (
                 item["summary"]
                 and old["summary"]
-                and summary_score >= 0.72
+                and summary_score >= 0.70
             ):
 
                 duplicate = True
@@ -727,7 +1026,7 @@ def valid_amharic(text):
         text
     )
 
-    if ratio < 0.55:
+    if ratio < 0.50:
 
         logger.warning(
             "Amharic ratio too low: %.2f",
@@ -736,100 +1035,76 @@ def valid_amharic(text):
 
         return False
 
-    english_words = re.findall(
-        r"\b[A-Za-z]{6,}\b",
-        text
-    )
-
-    if len(english_words) > 12:
-
-        logger.warning(
-            "Too many English words."
-        )
-
-        return False
-
-    if re.search(
-        r"[=_\-]{4,}",
-        text
-    ):
-
-        return False
-
     return True
 
 
 # =========================================================
-# GROQ - AMHARIC NEWS WRITER
+# GROQ TRANSLATION
 # =========================================================
 
 def translate_news_sync(item):
 
+    if not groq:
+
+        logger.error(
+            "GROQ_API_KEY is missing."
+        )
+
+        return None
+
     prompt = f"""
-የLiverpool FC ዜና በተፈጥሯዊ የኢትዮጵያ
-አማርኛ አዘጋጅ።
+የተሰጠውን የLiverpool FC ዜና ብቻ
+ወደ ተፈጥሯዊ፣ ግልጽ እና ትክክለኛ
+የኢትዮጵያ አማርኛ ተርጉም።
 
-ይህ የTelegram የLiverpool ዜና ቻናል ነው።
+በጣም አስፈላጊ:
 
-አስፈላጊ ህጎች:
+- ይህ TRANSLATION ነው።
+- አዲስ ዜና አትፍጠር።
+- ከተሰጠው ጽሑፍ ውጭ መረጃ አትጨምር።
+- ምንም ግምት አታድርግ።
+- የተጫዋች ስም ካልተጠቀሰ አትጨምር።
+- የዋጋ መጠን ካልተጠቀሰ አትጨምር።
+- የቀን መረጃ ካልተጠቀሰ አትጨምር።
+- የዝውውር ወሬ ከሆነ ወሬ መሆኑን ጠብቅ።
+- የተሰጠውን ትርጉም አትቀይር።
 
-1. ርዕሱ በአማርኛ ብቻ ይሁን።
+የTelegram ልጥፍ ቅርጽ:
 
-2. የዜናው ዋና ይዘት በአማርኛ ብቻ ይሁን።
+1. አጭር እና ግልጽ የአማርኛ ርዕስ።
+2. ከዚያ የዜናው ይዘት በተፈጥሯዊ አማርኛ።
 
-3. English headline አትጻፍ።
+እነዚህን አታስገባ:
+- 🔴 LIVERPOOL NEWS
+- ምንጭ:
+- Source:
+- @yegnaLiverpool
+- Link
+- English headline
+- English paragraph
 
-4. English paragraph አትጻፍ።
+የተጫዋቾች፣ የክለቦች፣ የሰዎች እና የስፖርት ስሞች
+በEnglish እንዲቀሩ ይችላሉ።
 
-5. የተጫዋች ስሞች፣ የክለብ ስሞች
-   እና የስፖርት ስሞች English መቀረት ይችላሉ።
+ቁጥሮች፣ ዋጋዎች እና ዋና እውነታዎችን
+በትክክል ጠብቅ።
 
-6. ቁጥሮች፣ ዋጋዎች፣ ቀኖች፣ ስሞች
-   እና ዋና እውነታዎችን አትቀይር።
+ተፈጥሯዊ አማርኛ ተጠቀም።
+የማይገባ የቃላት ድግግሞሽ አታድርግ።
+የማይገባ ወይም የተፈጠረ መረጃ አትጨምር።
 
-7. ከተሰጠው መረጃ ውጭ አትፍጠር።
-
-8. የዝውውር ወሬ ከሆነ
-   ወሬ መሆኑን ግልጽ አድርግ።
-
-9. ዜናውን አታሳጥር።
-   ዋና መረጃውን በበቂ ርዝመት አብራራ።
-
-10. ተመሳሳይ ሀሳብን ደጋግመህ አትጻፍ።
-
-11. Markdown አትጠቀም።
-
-12. ===== ወይም ----- ወይም ____ ወይም
-    ሌላ separator አትጠቀም።
-
-13. የምንጩን ስም በዜናው ውስጥ አትጻፍ።
-    ምንጩ ከAI መልስ ውጭ በPython ይጨመራል።
-
-14. Link አትጻፍ።
-
-15. "ርዕስ:"፣ "ዜና:"፣ "ምንጭ:"
-    የሚሉ ምልክቶችን አትጨምር።
-
-16. ከታች የተሰጠውን ይዘት ብቻ ተጠቀም።
-
-17. የሰው ልጅ የጻፈው የስፖርት ዜና
-    እንዲመስል ተፈጥሯዊ አማርኛ ተጠቀም።
-
-18. የሚከተለውን JSON ብቻ መልስ:
+JSON ብቻ መልስ:
 
 {{
   "title": "የአማርኛ ርዕስ",
-  "body": "ሙሉ የአማርኛ ዜና"
+  "body": "የአማርኛ ዜና"
 }}
 
-ዋና ርዕስ:
+TITLE:
 {item["title"]}
 
-ዋና ይዘት:
+CONTENT:
 {item["summary"]}
-
-ምንጭ:
-{item["source"]}
 """
 
     try:
@@ -843,12 +1118,12 @@ def translate_news_sync(item):
                 {
                     "role": "system",
                     "content": (
-                        "You are a professional Ethiopian "
-                        "Amharic Liverpool FC sports journalist. "
-                        "Return only valid JSON with title and body. "
-                        "The title and body must be natural Ethiopian "
-                        "Amharic. English is allowed only for proper "
-                        "names such as Liverpool or player names."
+                        "Translate the supplied Liverpool FC "
+                        "news into natural Ethiopian Amharic. "
+                        "Do not invent facts. "
+                        "Do not add information. "
+                        "Return only valid JSON containing "
+                        "title and body."
                     )
                 },
 
@@ -861,7 +1136,7 @@ def translate_news_sync(item):
 
             temperature=0.05,
 
-            max_tokens=1800,
+            max_tokens=1600,
 
             response_format={
                 "type": "json_object"
@@ -1031,12 +1306,10 @@ def get_rss_image(entry):
 
 
 # =========================================================
-# IMAGE FROM ARTICLE PAGE
+# IMAGE FROM ARTICLE
 # =========================================================
 
-def get_page_image(
-    article_url
-):
+def get_page_image(article_url):
 
     if not article_url:
         return None
@@ -1057,7 +1330,6 @@ def get_page_image(
         )
 
         if response.status_code != 200:
-
             return None
 
         content_type = (
@@ -1070,7 +1342,6 @@ def get_page_image(
         )
 
         if "text/html" not in content_type:
-
             return None
 
         soup = BeautifulSoup(
@@ -1078,7 +1349,6 @@ def get_page_image(
             "html.parser"
         )
 
-        # og:image
         image = soup.find(
             "meta",
             property="og:image"
@@ -1097,7 +1367,6 @@ def get_page_image(
                     image_url
                 )
 
-        # twitter:image
         image = soup.find(
             "meta",
             attrs={
@@ -1134,40 +1403,21 @@ def get_page_image(
 
 def get_image_url(item):
 
-    # First try RSS image
     rss_image = get_rss_image(
-        item.get(
-            "entry"
-        )
+        item.get("entry")
     )
 
     if rss_image:
 
-        logger.info(
-            "Image found from RSS."
-        )
-
         return rss_image
 
-    # Then try article page
     page_image = get_page_image(
-        item.get(
-            "link",
-            ""
-        )
+        item.get("link", "")
     )
 
     if page_image:
 
-        logger.info(
-            "Image found from article page."
-        )
-
         return page_image
-
-    logger.info(
-        "No article image found."
-    )
 
     return None
 
@@ -1176,9 +1426,7 @@ def get_image_url(item):
 # DOWNLOAD IMAGE
 # =========================================================
 
-def download_image(
-    image_url
-):
+def download_image(image_url):
 
     if not image_url:
         return None
@@ -1195,7 +1443,6 @@ def download_image(
         )
 
         if response.status_code != 200:
-
             return None
 
         content_type = (
@@ -1207,10 +1454,7 @@ def download_image(
             .lower()
         )
 
-        if (
-            "image" not in content_type
-        ):
-
+        if "image" not in content_type:
             return None
 
         extension = ".jpg"
@@ -1220,9 +1464,6 @@ def download_image(
 
         elif "webp" in content_type:
             extension = ".webp"
-
-        elif "jpeg" in content_type:
-            extension = ".jpg"
 
         temp_file = tempfile.NamedTemporaryFile(
             delete=False,
@@ -1277,12 +1518,17 @@ def make_message(
         source
     )
 
+    # IMPORTANT:
+    # No "LIVERPOOL NEWS"
+    # No "ምንጭ:"
+    # Source name only
+    # @yegnaLiverpool at the end
+
     return (
-        "🔴 <b>LIVERPOOL NEWS</b>\n\n"
         f"<b>{safe_title}</b>\n\n"
         f"{safe_body}\n\n"
-        f"📰 <b>ምንጭ:</b> {safe_source}\n\n"
-        "🔴 <b>YN Liverpool</b>"
+        f"<b>{safe_source}</b>\n\n"
+        "🔴 <b>@yegnaLiverpool</b>"
     )
 
 
@@ -1336,54 +1582,9 @@ async def send_news(item):
 
     try:
 
-        # =================================================
-        # SEND WITH PHOTO
-        # =================================================
+        if image_file and len(message) <= 1000:
 
-        if image_file:
-
-            # Telegram photo caption limit is around 1024 chars.
-            if len(message) <= 1000:
-
-                try:
-
-                    with open(
-                        image_file,
-                        "rb"
-                    ) as photo:
-
-                        await bot.send_photo(
-                            chat_id=CHANNEL_ID,
-                            photo=photo,
-                            caption=message,
-                            parse_mode=ParseMode.HTML
-                        )
-
-                    logger.info(
-                        "✅ News + photo sent."
-                    )
-
-                except Exception as photo_error:
-
-                    logger.warning(
-                        "Photo send failed: %s",
-                        photo_error
-                    )
-
-                    await bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=message,
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True
-                    )
-
-            else:
-
-                # Photo first
-                photo_caption = (
-                    "🔴 <b>LIVERPOOL NEWS</b>\n\n"
-                    f"<b>{html.escape(title)}</b>"
-                )
+            try:
 
                 with open(
                     image_file,
@@ -1393,11 +1594,21 @@ async def send_news(item):
                     await bot.send_photo(
                         chat_id=CHANNEL_ID,
                         photo=photo,
-                        caption=photo_caption,
+                        caption=message,
                         parse_mode=ParseMode.HTML
                     )
 
-                # Full news second
+                logger.info(
+                    "✅ News + photo sent."
+                )
+
+            except Exception as photo_error:
+
+                logger.warning(
+                    "Photo failed: %s",
+                    photo_error
+                )
+
                 await bot.send_message(
                     chat_id=CHANNEL_ID,
                     text=message,
@@ -1405,13 +1616,31 @@ async def send_news(item):
                     disable_web_page_preview=True
                 )
 
-                logger.info(
-                    "✅ Photo + full news sent."
+        elif image_file:
+
+            # Telegram photo caption limit
+            photo_caption = (
+                f"<b>{html.escape(title)}</b>"
+            )
+
+            with open(
+                image_file,
+                "rb"
+            ) as photo:
+
+                await bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=photo,
+                    caption=photo_caption,
+                    parse_mode=ParseMode.HTML
                 )
 
-        # =================================================
-        # NO PHOTO
-        # =================================================
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=message,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
 
         else:
 
@@ -1422,14 +1651,7 @@ async def send_news(item):
                 disable_web_page_preview=True
             )
 
-            logger.info(
-                "✅ News sent without photo."
-            )
-
-        # =================================================
-        # SAVE AS SEEN ONLY AFTER SUCCESS
-        # =================================================
-
+        # Save ONLY after successful send
         seen_news.add(
             item["id"]
         )
@@ -1474,12 +1696,11 @@ async def send_news(item):
                     )
 
             except Exception:
-
                 pass
 
 
 # =========================================================
-# NEWS SEND LIMIT
+# SEND LIMIT
 # =========================================================
 
 def can_send_news():
@@ -1502,9 +1723,7 @@ def can_send_news():
     if len(sent_times) >= MAX_NEWS_PER_30_MIN:
 
         logger.info(
-            "30-minute limit reached: %s/%s",
-            len(sent_times),
-            MAX_NEWS_PER_30_MIN
+            "30-minute limit reached."
         )
 
         return False
@@ -1517,13 +1736,8 @@ def can_send_news():
 
         if elapsed < MIN_NEWS_GAP:
 
-            remaining = (
-                MIN_NEWS_GAP - elapsed
-            )
-
             logger.info(
-                "Waiting %.0f seconds.",
-                remaining
+                "Minimum news gap not reached."
             )
 
             return False
@@ -1541,16 +1755,8 @@ async def news_loop():
 
         try:
 
-            if not can_send_news():
-
-                await asyncio.sleep(
-                    NEWS_CHECK_EVERY
-                )
-
-                continue
-
             logger.info(
-                "🔎 Checking Liverpool news..."
+                "🔎 Checking fresh important Liverpool news..."
             )
 
             news = await fetch_news()
@@ -1558,54 +1764,54 @@ async def news_loop():
             if not news:
 
                 logger.info(
-                    "No new trusted news found."
+                    "No fresh important trusted news."
                 )
 
-                await asyncio.sleep(
-                    NEWS_CHECK_EVERY
+            else:
+
+                news = remove_duplicates(
+                    news
                 )
-
-                continue
-
-            news = remove_duplicates(
-                news
-            )
-
-            logger.info(
-                "Found %s unique articles.",
-                len(news)
-            )
-
-            sent = False
-
-            for item in news:
-
-                if not can_send_news():
-                    break
-
-                success = await send_news(
-                    item
-                )
-
-                if success:
-
-                    sent = True
-
-                    logger.info(
-                        "✅ News successfully sent."
-                    )
-
-                    break
-
-            if not sent:
 
                 logger.info(
-                    "No article was sent."
+                    "Fresh unique articles: %s",
+                    len(news)
                 )
 
-            await asyncio.sleep(
-                NEWS_CHECK_EVERY
-            )
+                if can_send_news():
+
+                    sent = False
+
+                    for item in news:
+
+                        if not can_send_news():
+                            break
+
+                        success = await send_news(
+                            item
+                        )
+
+                        if success:
+
+                            sent = True
+
+                            logger.info(
+                                "✅ Important news sent."
+                            )
+
+                            break
+
+                    if not sent:
+
+                        logger.info(
+                            "No article was sent."
+                        )
+
+                else:
+
+                    logger.info(
+                        "News waiting because of 15-minute gap/limit."
+                    )
 
         except Exception as error:
 
@@ -1614,9 +1820,13 @@ async def news_loop():
                 error
             )
 
-            await asyncio.sleep(
-                NEWS_CHECK_EVERY
-            )
+        logger.info(
+            "⏳ Next news check in 15 minutes."
+        )
+
+        await asyncio.sleep(
+            NEWS_CHECK_EVERY
+        )
 
 
 # =========================================================
@@ -1629,7 +1839,6 @@ def football_request(
 ):
 
     if not FOOTBALL_API_KEY:
-
         return None
 
     url = (
@@ -1673,13 +1882,14 @@ def football_request(
 
 
 # =========================================================
-# LIVE MATCH
+# LIVE MATCHES
 # =========================================================
 
 async def send_live_matches():
 
-    if not FOOTBALL_API_KEY:
+    global live_seen
 
+    if not FOOTBALL_API_KEY:
         return
 
     data = await asyncio.to_thread(
@@ -1692,7 +1902,6 @@ async def send_live_matches():
     )
 
     if not data:
-
         return
 
     fixtures = data.get(
@@ -1772,7 +1981,6 @@ async def send_live_matches():
         )
 
         if live_key in live_seen:
-
             continue
 
         live_seen.add(
@@ -1807,7 +2015,7 @@ async def send_live_matches():
 
         message += (
             f"📌 {html.escape(status)}\n\n"
-            "🔴 <b>YN Liverpool</b>"
+            "🔴 <b>@yegnaLiverpool</b>"
         )
 
         try:
@@ -1899,7 +2107,11 @@ async def main():
     )
 
     logger.info(
-        "🖼️ News photo: ON"
+        "🕐 Fresh news only: ON"
+    )
+
+    logger.info(
+        "🔥 Important news only: ON"
     )
 
     logger.info(
@@ -1907,11 +2119,7 @@ async def main():
     )
 
     logger.info(
-        "🔗 Telegram news links: OFF"
-    )
-
-    logger.info(
-        "📰 News check: every 5 minutes"
+        "📰 News check: every 15 minutes"
     )
 
     logger.info(
