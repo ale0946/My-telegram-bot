@@ -1,8 +1,30 @@
-TEAM_ID = 40
+import os
+import json
+import hashlib
+import requests
 
-# ==============================
-# STORAGE
-# ==============================
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+TARGET_CHANNEL = "@yegnaLiverpool"
+
+SOURCE_CHANNELS = [
+    x.strip()
+    for x in os.getenv("SOURCE_CHANNELS", "").split(",")
+    if x.strip()
+]
+
+# =========================================================
+# DATA
+# =========================================================
 
 os.makedirs("data", exist_ok=True)
 
@@ -11,7 +33,7 @@ POSTED_FILE = "data/posted_news.json"
 try:
     with open(POSTED_FILE, "r", encoding="utf-8") as f:
         posted_news = set(json.load(f))
-except:
+except Exception:
     posted_news = set()
 
 
@@ -20,35 +42,41 @@ def save_posted():
         json.dump(
             list(posted_news)[-5000:],
             f,
-            ensure_ascii=False
+            ensure_ascii=False,
+            indent=2
         )
 
 
-# ==============================
-# CLEAN TEXT
-# ==============================
+# =========================================================
+# CLEAN NEWS
+# =========================================================
 
 def clean_text(text):
+    if not text:
+        return ""
 
     lines = []
 
     for line in text.splitlines():
-
         line = line.strip()
-        low = line.lower()
 
         if not line:
             continue
 
+        low = line.lower()
+
+        # Remove unwanted headers
         if "liverpool news" in low:
             continue
 
+        # Remove source footer
         if low.startswith("source:"):
             continue
 
         if low.startswith("ምንጭ:"):
             continue
 
+        # Remove our own channel
         if "@yegnaLiverpool" in line:
             continue
 
@@ -57,287 +85,352 @@ def clean_text(text):
     result = "\n".join(lines).strip()
 
     if not result:
-        result = "🔴 Liverpool News"
+        return ""
 
-    return result + "\n\n@yegnaLiverpool"
+    return result
 
 
-# ==============================
+# =========================================================
 # HASH
-# ==============================
+# =========================================================
 
-def make_hash(text):
-
+def make_hash(channel, post_id, text):
+    raw = f"{channel}:{post_id}:{text}"
     return hashlib.sha256(
-        " ".join(text.lower().split()).encode("utf-8")
+        raw.encode("utf-8")
     ).hexdigest()
 
 
-# ==============================
-# TELEGRAM SOURCE
-# ==============================
+# =========================================================
+# GET TELEGRAM PUBLIC PREVIEW
+# =========================================================
 
-async def fetch_source_news(app):
+def get_channel_posts(channel):
 
-    if not API_ID or not API_HASH:
-        print("❌ API_ID/API_HASH missing")
-        return
+    username = channel.replace("@", "").strip()
 
-    if not SOURCE_CHANNELS:
-        print("❌ SOURCE_CHANNELS missing")
-        return
+    url = f"https://t.me/s/{username}"
 
-    client = TelegramClient(
-        "liverpool_session",
-        API_ID,
-        API_HASH
-    )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Linux; Android 10) "
+            "AppleWebKit/537.36 "
+            "Chrome/149.0 Mobile Safari/537.36"
+        )
+    }
 
     try:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=30
+        )
 
-        await client.start()
+        if response.status_code != 200:
+            print(
+                f"❌ {channel} HTTP:",
+                response.status_code
+            )
+            return []
 
-        print("✅ Telegram source connected")
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
 
-        for channel in SOURCE_CHANNELS:
+        posts = []
 
+        for message in soup.select(
+            ".tgme_widget_message"
+        ):
+
+            data_post = message.get(
+                "data-post",
+                ""
+            )
+
+            if not data_post:
+                continue
+
+            # Post ID
             try:
+                post_id = data_post.split("/")[-1]
+            except Exception:
+                continue
 
-                print(f"🔎 Checking {channel}")
+            # TEXT
+            text_element = message.select_one(
+                ".tgme_widget_message_text"
+            )
 
-                messages = await client.get_messages(
-                    channel,
-                    limit=5
+            text = ""
+
+            if text_element:
+                text = text_element.get_text(
+                    "\n",
+                    strip=True
                 )
 
-                for msg in reversed(messages):
+            # IMAGE
+            image_url = None
 
-                    if not msg:
-                        continue
+            photo = message.select_one(
+                ".tgme_widget_message_photo_wrap"
+            )
 
-                    text = msg.text or ""
+            if photo:
 
-                    photo = None
-
-                    # ==========================
-                    # DOWNLOAD PHOTO
-                    # ==========================
-
-                    if msg.photo:
-
-                        photo = await client.download_media(
-                            msg,
-                            file=bytes
-                        )
-
-                    if not text and not photo:
-                        continue
-
-                    # ==========================
-                    # DUPLICATE
-                    # ==========================
-
-                    unique_text = (
-                        text
-                        + "_"
-                        + str(msg.id)
-                        + "_"
-                        + channel
-                    )
-
-                    news_id = make_hash(unique_text)
-
-                    if news_id in posted_news:
-                        continue
-
-                    caption = clean_text(text)
-
-                    # ==========================
-                    # SEND
-                    # ==========================
-
-                    if photo:
-
-                        await app.bot.send_photo(
-                            chat_id=TARGET_CHANNEL,
-                            photo=photo,
-                            caption=caption[:1024]
-                        )
-
-                    else:
-
-                        await app.bot.send_message(
-                            chat_id=TARGET_CHANNEL,
-                            text=caption
-                        )
-
-                    posted_news.add(news_id)
-                    save_posted()
-
-                    print(
-                        f"✅ Sent from {channel}"
-                    )
-
-            except Exception as e:
-
-                print(
-                    f"❌ Error reading {channel}:",
-                    e
+                style = photo.get(
+                    "style",
+                    ""
                 )
+
+                if "background-image" in style:
+
+                    start = style.find(
+                        "url('"
+                    )
+
+                    if start == -1:
+                        start = style.find(
+                            'url("'
+                        )
+
+                    if start != -1:
+
+                        start += 5
+
+                        end = style.find(
+                            "'",
+                            start
+                        )
+
+                        if end == -1:
+                            end = style.find(
+                                '"',
+                                start
+                            )
+
+                        if end != -1:
+                            image_url = style[
+                                start:end
+                            ]
+
+            # Some Telegram previews expose IMG
+            if not image_url:
+
+                img = message.select_one(
+                    ".tgme_widget_message_photo_wrap img"
+                )
+
+                if img:
+                    image_url = img.get("src")
+
+            posts.append({
+                "channel": channel,
+                "post_id": post_id,
+                "text": text,
+                "image": image_url
+            })
+
+        return posts
 
     except Exception as e:
 
         print(
-            "❌ Telegram connection error:",
+            f"❌ Error reading {channel}:",
             e
         )
 
-    finally:
-
-        await client.disconnect()
+        return []
 
 
-# ==============================
-# FOOTBALL API
-# ==============================
+# =========================================================
+# DOWNLOAD IMAGE
+# =========================================================
 
-async def football_request(endpoint):
+def download_image(url):
 
-    if not FOOTBALL_API_KEY:
+    if not url:
         return None
 
     try:
 
-        async with aiohttp.ClientSession() as session:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            },
+            timeout=30
+        )
 
-            async with session.get(
-                "https://v3.football.api-sports.io/"
-                + endpoint,
-                headers={
-                    "x-apisports-key":
-                    FOOTBALL_API_KEY
-                },
-                timeout=20
-            ) as response:
+        if response.status_code != 200:
+            return None
 
-                if response.status != 200:
-                    return None
-
-                return await response.json()
+        return response.content
 
     except Exception as e:
 
         print(
-            "Football API error:",
+            "❌ Image download error:",
             e
         )
 
         return None
 
 
-# ==============================
-# LIVE MATCH
-# ==============================
+# =========================================================
+# SEND NEWS
+# =========================================================
 
-last_live = {}
+async def send_news(
+    app,
+    post
+):
 
+    channel = post["channel"]
+    post_id = post["post_id"]
+    original_text = post["text"]
+    image_url = post["image"]
 
-async def check_live(app):
-
-    data = await football_request(
-        f"fixtures?team={TEAM_ID}&live=all"
+    text = clean_text(
+        original_text
     )
 
-    if not data:
+    # No text and no image = ignore
+    if not text and not image_url:
         return
 
-    for game in data.get(
-        "response",
-        []
-    ):
+    news_hash = make_hash(
+        channel,
+        post_id,
+        original_text
+    )
 
-        fixture = game["fixture"]
-        teams = game["teams"]
-        goals = game["goals"]
-        status = fixture["status"]
+    if news_hash in posted_news:
+        return
 
-        fixture_id = fixture["id"]
+    # ==========================================
+    # FINAL CAPTION
+    # ==========================================
 
-        state = {
-            "home": goals.get("home"),
-            "away": goals.get("away"),
-            "minute": status.get("elapsed"),
-            "status": status.get("short")
-        }
+    final_text = (
+        f"{text}\n\n"
+        f"@yegnaLiverpool"
+    )
 
-        if last_live.get(fixture_id) == state:
-            continue
+    # Telegram photo caption max = 1024
+    caption = final_text[:1024]
 
-        last_live[fixture_id] = state
+    try:
 
-        home = teams["home"]["name"]
-        away = teams["away"]["name"]
+        if image_url:
 
-        message = (
-            f"⚽ {home} "
-            f"{goals.get('home') or 0} - "
-            f"{goals.get('away') or 0} "
-            f"{away}\n\n"
-        )
-
-        if status.get("short") == "HT":
-
-            message += (
-                "⏸️ የመጀመሪያው አጋማሽ "
-                "ተጠናቋል"
+            image = download_image(
+                image_url
             )
 
-        elif status.get("short") in [
-            "FT",
-            "AET",
-            "PEN"
-        ]:
+            if image:
 
-            message += (
-                "🏁 ጨዋታው ተጠናቋል"
-            )
+                await app.bot.send_photo(
+                    chat_id=TARGET_CHANNEL,
+                    photo=image,
+                    caption=caption
+                )
+
+                # If text was longer than caption limit
+                if len(final_text) > 1024:
+
+                    await app.bot.send_message(
+                        chat_id=TARGET_CHANNEL,
+                        text=final_text[1024:]
+                    )
+
+            else:
+
+                await app.bot.send_message(
+                    chat_id=TARGET_CHANNEL,
+                    text=final_text
+                )
 
         else:
 
-            message += (
-                f"⏱️ {status.get('elapsed') or 0}'\n"
-                "🔴 ጨዋታው ቀጥሏል"
-            )
-
-        message += "\n\n@yegnaLiverpool"
-
-        try:
-
             await app.bot.send_message(
                 chat_id=TARGET_CHANNEL,
-                text=message
+                text=final_text
             )
 
-            print("⚽ LIVE sent")
+        posted_news.add(
+            news_hash
+        )
 
-        except Exception as e:
+        save_posted()
+
+        print(
+            f"✅ SENT: {channel} / {post_id}"
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ Telegram send error:",
+            e
+        )
+
+
+# =========================================================
+# CHECK ALL SOURCES
+# =========================================================
+
+async def check_sources(app):
+
+    if not SOURCE_CHANNELS:
+
+        print(
+            "❌ SOURCE_CHANNELS is empty"
+        )
+
+        return
+
+    print(
+        "🔎 Checking Telegram sources..."
+    )
+
+    for channel in SOURCE_CHANNELS:
+
+        print(
+            f"📡 Checking {channel}"
+        )
+
+        posts = get_channel_posts(
+            channel
+        )
+
+        if not posts:
 
             print(
-                "LIVE error:",
-                e
+                f"⚠️ No posts found: {channel}"
             )
 
+            continue
 
-async def live_job(context):
+        # Check newest posts first
+        for post in reversed(posts):
 
-    await check_live(
-        context.application
+            await send_news(
+                app,
+                post
+            )
+
+    print(
+        "✅ Source checking finished"
     )
 
 
-# ==============================
+# =========================================================
 # ADMIN
-# ==============================
+# =========================================================
 
 def is_admin(update):
 
@@ -347,40 +440,69 @@ def is_admin(update):
     )
 
 
-async def start(update, context):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
-        "🔴 Liverpool Bot started"
+        "🔴 Liverpool News Bot በስራ ላይ ነው።"
     )
 
 
-async def status(update, context):
+async def status(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update):
         return
 
     await update.message.reply_text(
-        "🔴 Liverpool Bot is running"
+        "🟢 Bot: ON\n"
+        f"📢 Target: {TARGET_CHANNEL}\n"
+        f"📰 Sources: {len(SOURCE_CHANNELS)}"
     )
 
 
-# ==============================
+async def check_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(update):
+        return
+
+    await update.message.reply_text(
+        "🔎 Source channels እየተፈተሹ ነው..."
+    )
+
+    await check_sources(
+        context.application
+    )
+
+    await update.message.reply_text(
+        "✅ Checking finished."
+    )
+
+
+# =========================================================
 # STARTUP
-# ==============================
+# =========================================================
 
 async def post_init(app):
 
-    # Check source channels immediately
-    await fetch_source_news(app)
-
     print(
-        "✅ Source check completed"
+        "🔴 Liverpool Bot started!"
     )
 
+    # Check sources immediately
+    await check_sources(app)
 
-# ==============================
+
+# =========================================================
 # MAIN
-# ==============================
+# =========================================================
 
 def main():
 
@@ -389,40 +511,45 @@ def main():
             "BOT_TOKEN missing"
         )
 
-    app = (
+    if not ADMIN_ID:
+        raise ValueError(
+            "ADMIN_ID missing"
+        )
+
+    application = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
         .build()
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "start",
             start
         )
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "status",
             status
         )
     )
 
-    app.job_queue.run_repeating(
-        live_job,
-        interval=300,
-        first=30
+    application.add_handler(
+        CommandHandler(
+            "check",
+            check_command
+        )
     )
 
     print(
-        "🔴 Liverpool Bot started!"
+        "🚀 Liverpool News Bot running..."
     )
 
-    app.run_polling()
+    application.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
