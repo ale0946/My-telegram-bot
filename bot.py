@@ -1,39 +1,3 @@
-import os
-import json
-import hashlib
-import asyncio
-import aiohttp
-
-from dotenv import load_dotenv
-from telethon import TelegramClient
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
-load_dotenv()
-
-# ==============================
-# CONFIG
-# ==============================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
-API_HASH = os.getenv("API_HASH")
-
-try:
-    API_ID = int(os.getenv("API_ID", "0"))
-    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-except:
-    API_ID = 0
-    ADMIN_ID = 0
-
-TARGET_CHANNEL = "@yegnaLiverpool"
-
-SOURCE_CHANNELS = [
-    x.strip()
-    for x in os.getenv("SOURCE_CHANNELS", "").split(",")
-    if x.strip()
-]
-
 TEAM_ID = 40
 
 # ==============================
