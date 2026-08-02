@@ -43,6 +43,7 @@ CHECK_INTERVAL_MINUTES = int(
 )
 
 LIVERPOOL_TEAM_ID = "364"
+
 DB_FILE = "news.db"
 
 
@@ -164,20 +165,29 @@ HEADERS = {
 # =========================================================
 
 def clean_text(text):
+
     if not text:
         return ""
 
     text = BeautifulSoup(
         str(text),
         "html.parser"
-    ).get_text(" ", strip=True)
+    ).get_text(
+        " ",
+        strip=True
+    )
 
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
     return text.strip()
 
 
 def escape_html(text):
+
     if not text:
         return ""
 
@@ -190,6 +200,7 @@ def escape_html(text):
 
 
 def normalize_text(text):
+
     text = clean_text(text).lower()
 
     text = re.sub(
@@ -214,11 +225,6 @@ def normalize_text(text):
 
 
 def make_fingerprint(title, url=""):
-    """
-    URL ብቻ ላይ አንመሰረትም።
-    ተመሳሳይ ዜና ከሌላ source URL ቢመጣም
-    title fingerprint በመጠቀም እንዳይደገም ይረዳል።
-    """
 
     normalized_title = normalize_text(title)
 
@@ -233,6 +239,7 @@ def make_fingerprint(title, url=""):
 
 
 def title_tokens(title):
+
     words = normalize_text(title).split()
 
     stop_words = {
@@ -251,6 +258,7 @@ def title_tokens(title):
 
 
 def titles_are_similar(title1, title2):
+
     a = title_tokens(title1)
     b = title_tokens(title2)
 
@@ -258,7 +266,11 @@ def titles_are_similar(title1, title2):
         return False
 
     intersection = len(a & b)
-    smaller = min(len(a), len(b))
+
+    smaller = min(
+        len(a),
+        len(b)
+    )
 
     if smaller == 0:
         return False
@@ -269,10 +281,11 @@ def titles_are_similar(title1, title2):
 
 
 # =========================================================
-# DATABASE NEWS CHECKS
+# DATABASE NEWS
 # =========================================================
 
 def already_posted(fingerprint):
+
     row = db.execute(
         """
         SELECT 1
@@ -287,6 +300,7 @@ def already_posted(fingerprint):
 
 
 def similar_news_already_posted(title):
+
     rows = db.execute(
         """
         SELECT title
@@ -297,11 +311,10 @@ def similar_news_already_posted(title):
     ).fetchall()
 
     for row in rows:
-        old_title = row[0]
 
         if titles_are_similar(
             title,
-            old_title
+            row[0]
         ):
             return True
 
@@ -314,6 +327,7 @@ def save_posted(
     url,
     source
 ):
+
     db.execute(
         """
         INSERT OR IGNORE INTO posted_news
@@ -339,6 +353,7 @@ def save_posted(
 # =========================================================
 
 def live_event_already_posted(event_key):
+
     row = db.execute(
         """
         SELECT 1
@@ -357,6 +372,7 @@ def save_live_event(
     event_type,
     event_text
 ):
+
     db.execute(
         """
         INSERT OR IGNORE INTO live_events
@@ -383,13 +399,13 @@ def save_live_event(
 def parse_entry_time(entry):
 
     try:
-        if (
-            getattr(
-                entry,
-                "published_parsed",
-                None
-            )
+
+        if getattr(
+            entry,
+            "published_parsed",
+            None
         ):
+
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.published_parsed
@@ -397,13 +413,12 @@ def parse_entry_time(entry):
                 tz=timezone.utc
             )
 
-        if (
-            getattr(
-                entry,
-                "updated_parsed",
-                None
-            )
+        if getattr(
+            entry,
+            "updated_parsed",
+            None
         ):
+
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.updated_parsed
@@ -412,6 +427,7 @@ def parse_entry_time(entry):
             )
 
     except Exception as e:
+
         logger.warning(
             "Date parsing error: %s",
             e
@@ -422,7 +438,9 @@ def parse_entry_time(entry):
 
 def is_recent(entry):
 
-    published = parse_entry_time(entry)
+    published = parse_entry_time(
+        entry
+    )
 
     if not published:
         return True
@@ -435,8 +453,11 @@ def is_recent(entry):
         now - published
     ).total_seconds()
 
-    return age >= 0 and age <= (
-        MAX_NEWS_AGE_HOURS * 3600
+    return (
+        age >= 0
+        and age <= (
+            MAX_NEWS_AGE_HOURS * 3600
+        )
     )
 
 
@@ -460,6 +481,7 @@ def google_news_rss(query):
 def get_google_news(query):
 
     try:
+
         response = requests.get(
             google_news_rss(query),
             headers=HEADERS,
@@ -492,6 +514,7 @@ def resolve_article_url(url):
         return ""
 
     try:
+
         response = requests.get(
             url,
             headers=HEADERS,
@@ -499,15 +522,20 @@ def resolve_article_url(url):
             allow_redirects=True
         )
 
-        return response.url or url
+        return (
+            response.url
+            or url
+        )
 
     except Exception:
+
         return url
 
 
 def get_domain(url):
 
     try:
+
         return urlparse(
             url
         ).netloc.lower().replace(
@@ -516,6 +544,7 @@ def get_domain(url):
         )
 
     except Exception:
+
         return ""
 
 
@@ -523,31 +552,90 @@ def get_domain(url):
 # SOURCE VALIDATION
 # =========================================================
 
-def source_domain_allowed(
-    source_name,
-    url
+def domain_matches(
+    domain,
+    allowed_domains
 ):
 
-    domain = get_domain(
-        resolve_article_url(url)
+    domain = (
+        domain
+        .lower()
+        .replace("www.", "")
     )
+
+    for allowed in allowed_domains:
+
+        allowed = (
+            allowed
+            .lower()
+            .replace("www.", "")
+        )
+
+        if (
+            domain == allowed
+            or domain.endswith(
+                "." + allowed
+            )
+        ):
+            return True
+
+    return False
+
+
+def source_domain_allowed(
+    source_name,
+    url,
+    rss_source_domain=""
+):
 
     allowed = TRUSTED_SOURCES.get(
         source_name,
         []
     )
 
-    for item in allowed:
+    # -----------------------------------------------------
+    # First: RSS source domain
+    # -----------------------------------------------------
 
-        item = item.lower()
+    if rss_source_domain:
 
-        if (
-            domain == item
-            or domain.endswith(
-                "." + item
-            )
+        if domain_matches(
+            rss_source_domain,
+            allowed
         ):
             return True
+
+    # -----------------------------------------------------
+    # Second: original URL
+    # -----------------------------------------------------
+
+    original_domain = get_domain(
+        url
+    )
+
+    if domain_matches(
+        original_domain,
+        allowed
+    ):
+        return True
+
+    # -----------------------------------------------------
+    # Third: resolved URL
+    # -----------------------------------------------------
+
+    resolved = resolve_article_url(
+        url
+    )
+
+    resolved_domain = get_domain(
+        resolved
+    )
+
+    if domain_matches(
+        resolved_domain,
+        allowed
+    ):
+        return True
 
     return False
 
@@ -561,16 +649,18 @@ def is_valid_image_url(url):
     if not url:
         return False
 
-    url = str(url).strip()
-
-    return url.startswith(
-        ("http://", "https://")
+    return str(url).strip().startswith(
+        (
+            "http://",
+            "https://"
+        )
     )
 
 
 def get_feed_image(entry):
 
     try:
+
         for media in getattr(
             entry,
             "media_content",
@@ -589,6 +679,7 @@ def get_feed_image(entry):
         pass
 
     try:
+
         for media in getattr(
             entry,
             "media_thumbnail",
@@ -607,18 +698,22 @@ def get_feed_image(entry):
         pass
 
     try:
+
         for enclosure in getattr(
             entry,
             "enclosures",
             []
         ):
 
-            url = enclosure.get(
-                "href",
-                ""
-            ) or enclosure.get(
-                "url",
-                ""
+            url = (
+                enclosure.get(
+                    "href",
+                    ""
+                )
+                or enclosure.get(
+                    "url",
+                    ""
+                )
             )
 
             if is_valid_image_url(url):
@@ -628,6 +723,7 @@ def get_feed_image(entry):
         pass
 
     try:
+
         summary = getattr(
             entry,
             "summary",
@@ -644,8 +740,14 @@ def get_feed_image(entry):
         if image:
 
             url = (
-                image.get("src", "")
-                or image.get("data-src", "")
+                image.get(
+                    "src",
+                    ""
+                )
+                or image.get(
+                    "data-src",
+                    ""
+                )
             )
 
             if is_valid_image_url(url):
@@ -682,30 +784,21 @@ def get_page_image(url):
         )
 
         selectors = [
-            (
-                "meta",
-                {
-                    "property": "og:image"
-                }
-            ),
-            (
-                "meta",
-                {
-                    "name": "twitter:image"
-                }
-            ),
-            (
-                "meta",
-                {
-                    "name": "twitter:image:src"
-                }
-            )
+            {
+                "property": "og:image"
+            },
+            {
+                "name": "twitter:image"
+            },
+            {
+                "name": "twitter:image:src"
+            }
         ]
 
-        for tag, attrs in selectors:
+        for attrs in selectors:
 
             image = soup.find(
-                tag,
+                "meta",
                 attrs=attrs
             )
 
@@ -736,16 +829,20 @@ def get_article_image(
     url
 ):
 
-    image = get_feed_image(entry)
+    image = get_feed_image(
+        entry
+    )
 
     if image:
         return image
 
-    return get_page_image(url)
+    return get_page_image(
+        url
+    )
 
 
 # =========================================================
-# IMAGE DOWNLOAD
+# DOWNLOAD IMAGE
 # =========================================================
 
 def download_image(image_url):
@@ -771,7 +868,9 @@ def download_image(image_url):
         if not content:
             return None, None
 
-        if len(content) > 10 * 1024 * 1024:
+        if len(content) > (
+            10 * 1024 * 1024
+        ):
             return None, None
 
         content_type = (
@@ -783,19 +882,27 @@ def download_image(image_url):
             .lower()
         )
 
+        valid_signature = (
+            content.startswith(
+                b"\xff\xd8\xff"
+            )
+            or content.startswith(
+                b"\x89PNG"
+            )
+            or content.startswith(
+                b"RIFF"
+            )
+            or content.startswith(
+                b"GIF8"
+            )
+        )
+
         valid_types = (
             "image/jpeg",
             "image/jpg",
             "image/png",
             "image/webp",
             "image/gif"
-        )
-
-        valid_signature = (
-            content.startswith(b"\xff\xd8\xff")
-            or content.startswith(b"\x89PNG")
-            or content.startswith(b"RIFF")
-            or content.startswith(b"GIF8")
         )
 
         if (
@@ -808,16 +915,28 @@ def download_image(image_url):
             return None, None
 
         if "png" in content_type:
-            filename = "liverpool_news.png"
+
+            filename = (
+                "liverpool_news.png"
+            )
 
         elif "webp" in content_type:
-            filename = "liverpool_news.webp"
+
+            filename = (
+                "liverpool_news.webp"
+            )
 
         elif "gif" in content_type:
-            filename = "liverpool_news.gif"
+
+            filename = (
+                "liverpool_news.gif"
+            )
 
         else:
-            filename = "liverpool_news.jpg"
+
+            filename = (
+                "liverpool_news.jpg"
+            )
 
         return content, filename
 
@@ -864,15 +983,25 @@ def collect_news():
 
     for source_name, query in queries:
 
-        feed = get_google_news(query)
+        logger.info(
+            "Searching: %s",
+            source_name
+        )
+
+        feed = get_google_news(
+            query
+        )
 
         if not feed:
+
+            logger.warning(
+                "No feed: %s",
+                source_name
+            )
+
             continue
 
         for entry in feed.entries[:10]:
-
-            if not is_recent(entry):
-                continue
 
             title = clean_text(
                 getattr(
@@ -900,18 +1029,86 @@ def collect_news():
                 continue
 
             # -------------------------------------------------
-            # REAL SOURCE CHECK
+            # RECENT
+            # -------------------------------------------------
+
+            if not is_recent(entry):
+
+                logger.info(
+                    "Old article skipped: %s",
+                    title
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # RSS SOURCE
+            # -------------------------------------------------
+
+            rss_source_domain = ""
+
+            try:
+
+                rss_source = getattr(
+                    entry,
+                    "source",
+                    None
+                )
+
+                if rss_source:
+
+                    rss_source_domain = (
+                        getattr(
+                            rss_source,
+                            "href",
+                            ""
+                        )
+                    )
+
+                    if rss_source_domain:
+
+                        rss_source_domain = (
+                            get_domain(
+                                rss_source_domain
+                            )
+                        )
+
+            except Exception:
+                pass
+
+            # -------------------------------------------------
+            # SOURCE CHECK
             # -------------------------------------------------
 
             if not source_domain_allowed(
                 source_name,
-                url
+                url,
+                rss_source_domain
             ):
+
                 logger.info(
-                    "Rejected wrong domain: %s | %s",
+                    "Rejected wrong source: %s | %s | rss=%s",
                     source_name,
-                    url
+                    url,
+                    rss_source_domain
                 )
+
+                continue
+
+            # -------------------------------------------------
+            # LIVERPOOL CHECK
+            # -------------------------------------------------
+
+            if not appears_liverpool_related(
+                title,
+                summary
+            ):
+
+                logger.info(
+                    "Non-Liverpool skipped: %s",
+                    title
+                )
+
                 continue
 
             image_url = get_article_image(
@@ -926,6 +1123,11 @@ def collect_news():
                 "source": source_name,
                 "image_url": image_url
             })
+
+            logger.info(
+                "Trusted article accepted: %s",
+                title
+            )
 
     logger.info(
         "Collected %s trusted articles.",
@@ -1020,30 +1222,15 @@ Format:
 
 def ai_analyze(article):
 
-    source = article.get(
-        "source",
-        ""
-    )
-
-    title = article.get(
-        "title",
-        ""
-    )
-
-    summary = article.get(
-        "summary",
-        ""
-    )
-
     prompt = f"""
 TRUSTED SOURCE:
-{source}
+{article.get("source", "")}
 
 TITLE:
-{title}
+{article.get("title", "")}
 
 ARTICLE SUMMARY:
-{summary}
+{article.get("summary", "")}
 
 Liverpool FC ላይ የተመሰረተ ዜና ከሆነ ብቻ POST አድርግ።
 
@@ -1086,7 +1273,9 @@ JSON only.
             .content
         )
 
-        return json.loads(content)
+        return json.loads(
+            content
+        )
 
     except Exception as e:
 
@@ -1099,53 +1288,196 @@ JSON only.
 
 
 # =========================================================
-# TELEGRAM CHECK
+# TELEGRAM API
 # =========================================================
 
-def telegram_check_bot():
+def telegram_api(
+    method,
+    payload=None
+):
 
     url = (
         f"https://api.telegram.org/bot"
-        f"{BOT_TOKEN}/getMe"
+        f"{BOT_TOKEN}/{method}"
     )
 
     try:
 
-        response = requests.get(
+        response = requests.post(
             url,
-            timeout=20
+            json=payload or {},
+            timeout=30
         )
 
-        if response.status_code != 200:
-            return False
+        logger.info(
+            "Telegram %s HTTP %s",
+            method,
+            response.status_code
+        )
 
-        data = response.json()
+        try:
+            data = response.json()
 
-        if data.get("ok"):
+        except Exception:
 
-            bot_info = data.get(
-                "result",
-                {}
+            logger.error(
+                "Telegram returned non-JSON: %s",
+                response.text[:500]
             )
 
-            logger.info(
-                "Telegram connected: @%s",
-                bot_info.get(
-                    "username",
-                    "unknown"
+            return None
+
+        if not data.get("ok"):
+
+            logger.error(
+                "TELEGRAM API ERROR | method=%s | %s",
+                method,
+                json.dumps(
+                    data,
+                    ensure_ascii=False
                 )
             )
 
-            return True
+        return data
 
     except Exception as e:
 
         logger.exception(
-            "Telegram check error: %s",
+            "Telegram request failed: %s",
             e
         )
 
-    return False
+        return None
+
+
+# =========================================================
+# TELEGRAM CONNECTION + CHANNEL TEST
+# =========================================================
+
+def telegram_check_bot():
+
+    data = telegram_api(
+        "getMe"
+    )
+
+    if not data or not data.get("ok"):
+
+        logger.error(
+            "BOT TOKEN IS NOT WORKING."
+        )
+
+        return False
+
+    bot_info = data.get(
+        "result",
+        {}
+    )
+
+    logger.info(
+        "Telegram bot connected: @%s",
+        bot_info.get(
+            "username",
+            "unknown"
+        )
+    )
+
+    # -----------------------------------------------------
+    # IMPORTANT:
+    # Check channel access
+    # -----------------------------------------------------
+
+    chat_data = telegram_api(
+        "getChat",
+        {
+            "chat_id": CHANNEL_ID
+        }
+    )
+
+    if not chat_data or not chat_data.get(
+        "ok"
+    ):
+
+        logger.error(
+            "BOT CANNOT ACCESS CHANNEL: %s",
+            CHANNEL_ID
+        )
+
+        return False
+
+    chat = chat_data.get(
+        "result",
+        {}
+    )
+
+    logger.info(
+        "Channel found: %s | type=%s",
+        chat.get(
+            "title",
+            CHANNEL_ID
+        ),
+        chat.get(
+            "type",
+            ""
+        )
+    )
+
+    # -----------------------------------------------------
+    # Check bot membership/admin
+    # -----------------------------------------------------
+
+    bot_id = bot_info.get(
+        "id"
+    )
+
+    if bot_id:
+
+        member_data = telegram_api(
+            "getChatMember",
+            {
+                "chat_id": CHANNEL_ID,
+                "user_id": bot_id
+            }
+        )
+
+        if member_data and member_data.get(
+            "ok"
+        ):
+
+            member = member_data.get(
+                "result",
+                {}
+            )
+
+            status = member.get(
+                "status",
+                ""
+            )
+
+            logger.info(
+                "Bot channel status: %s",
+                status
+            )
+
+            if status not in (
+                "administrator",
+                "creator"
+            ):
+
+                logger.error(
+                    "BOT IS NOT ADMIN IN CHANNEL."
+                )
+
+                return False
+
+        else:
+
+            logger.error(
+                "Could not verify bot channel membership."
+            )
+
+            return False
+
+    return True
 
 
 # =========================================================
@@ -1154,50 +1486,20 @@ def telegram_check_bot():
 
 def telegram_send_message(text):
 
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{BOT_TOKEN}/sendMessage"
+    data = telegram_api(
+        "sendMessage",
+        {
+            "chat_id": CHANNEL_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
     )
 
-    payload = {
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    }
-
-    try:
-
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=30
-        )
-
-        logger.info(
-            "Telegram text status: %s",
-            response.status_code
-        )
-
-        if response.status_code != 200:
-            logger.error(
-                "Telegram text error: %s",
-                response.text
-            )
-            return False
-
-        data = response.json()
-
-        return data.get("ok") is True
-
-    except Exception as e:
-
-        logger.exception(
-            "Telegram send error: %s",
-            e
-        )
-
-        return False
+    return (
+        data is not None
+        and data.get("ok") is True
+    )
 
 
 # =========================================================
@@ -1214,9 +1516,15 @@ def telegram_send_photo(
     )
 
     if not image_data:
+
+        logger.warning(
+            "Could not download image."
+        )
+
         return False
 
     if len(caption) > 1024:
+
         caption = (
             caption[:1020]
             + "..."
@@ -1251,20 +1559,25 @@ def telegram_send_photo(
         )
 
         logger.info(
-            "Telegram photo status: %s",
+            "Telegram sendPhoto HTTP %s",
             response.status_code
         )
 
-        if response.status_code != 200:
-            logger.error(
-                "Telegram photo error: %s",
-                response.text
-            )
-            return False
-
         result = response.json()
 
-        return result.get("ok") is True
+        if not result.get("ok"):
+
+            logger.error(
+                "TELEGRAM PHOTO ERROR: %s",
+                json.dumps(
+                    result,
+                    ensure_ascii=False
+                )
+            )
+
+        return result.get(
+            "ok"
+        ) is True
 
     except Exception as e:
 
@@ -1341,31 +1654,18 @@ def process_article(article):
         return False
 
     # -----------------------------------------------------
-    # Liverpool filter
+    # Liverpool
     # -----------------------------------------------------
 
     if not appears_liverpool_related(
         title,
         summary
     ):
-        logger.info(
-            "Rejected non-Liverpool article: %s",
-            title
-        )
+
         return False
 
     # -----------------------------------------------------
-    # Trusted source verification
-    # -----------------------------------------------------
-
-    if not source_domain_allowed(
-        source,
-        url
-    ):
-        return False
-
-    # -----------------------------------------------------
-    # Exact duplicate
+    # Duplicate
     # -----------------------------------------------------
 
     fingerprint = make_fingerprint(
@@ -1376,23 +1676,23 @@ def process_article(article):
     if already_posted(
         fingerprint
     ):
+
         logger.info(
             "Exact duplicate skipped: %s",
             title
         )
-        return False
 
-    # -----------------------------------------------------
-    # Similar duplicate
-    # -----------------------------------------------------
+        return False
 
     if similar_news_already_posted(
         title
     ):
+
         logger.info(
-            "Similar news skipped: %s",
+            "Similar duplicate skipped: %s",
             title
         )
+
         return False
 
     # -----------------------------------------------------
@@ -1404,7 +1704,9 @@ def process_article(article):
         title
     )
 
-    result = ai_analyze(article)
+    result = ai_analyze(
+        article
+    )
 
     if not result:
         return False
@@ -1417,27 +1719,34 @@ def process_article(article):
     ).upper()
 
     try:
+
         confidence = int(
             result.get(
                 "confidence",
                 0
             ) or 0
         )
+
     except Exception:
+
         confidence = 0
 
     if decision != "POST":
+
         logger.info(
             "AI rejected: %s",
             title
         )
+
         return False
 
     if confidence < 75:
+
         logger.info(
             "Confidence too low: %s",
             confidence
         )
+
         return False
 
     message = build_telegram_message(
@@ -1448,7 +1757,7 @@ def process_article(article):
         return False
 
     # -----------------------------------------------------
-    # PHOTO
+    # IMAGE
     # -----------------------------------------------------
 
     if image_url:
@@ -1472,36 +1781,6 @@ def process_article(article):
 
             return True
 
-        # fallback image
-
-        fallback_image = get_page_image(
-            url
-        )
-
-        if (
-            fallback_image
-            and fallback_image != image_url
-        ):
-
-            if telegram_send_photo(
-                fallback_image,
-                message
-            ):
-
-                save_posted(
-                    fingerprint,
-                    title,
-                    url,
-                    source
-                )
-
-                logger.info(
-                    "POSTED WITH FALLBACK IMAGE: %s",
-                    title
-                )
-
-                return True
-
     # -----------------------------------------------------
     # TEXT FALLBACK
     # -----------------------------------------------------
@@ -1524,6 +1803,11 @@ def process_article(article):
 
         return True
 
+    logger.error(
+        "FAILED TO POST ARTICLE: %s",
+        title
+    )
+
     return False
 
 
@@ -1540,15 +1824,14 @@ def check_news():
     articles = collect_news()
 
     if not articles:
-        logger.info(
-            "No recent news."
+
+        logger.warning(
+            "NO TRUSTED ARTICLES FOUND."
         )
+
         return
 
     posted_count = 0
-
-    # Sort newest entries first when dates are available.
-    # Google News already generally does this.
 
     for article in articles:
 
@@ -1560,6 +1843,7 @@ def check_news():
             if process_article(
                 article
             ):
+
                 posted_count += 1
 
             time.sleep(2)
@@ -1645,6 +1929,7 @@ def find_liverpool_match(data):
                 )
 
                 if team_id == LIVERPOOL_TEAM_ID:
+
                     return event
 
     return None
@@ -1709,11 +1994,13 @@ def get_match_teams(event):
         if team.get(
             "homeAway"
         ) == "home":
+
             home = team
 
         elif team.get(
             "homeAway"
         ) == "away":
+
             away = team
 
     return home, away
@@ -1834,7 +2121,6 @@ def extract_live_events(event):
             )
         )
 
-        # አሁን የLiverpool ተጫዋች event ብቻ
         if team_id != LIVERPOOL_TEAM_ID:
             continue
 
@@ -2020,7 +2306,7 @@ def process_live_match():
     )
 
     # -----------------------------------------------------
-    # PRE-MATCH
+    # PRE
     # -----------------------------------------------------
 
     if state == "pre":
@@ -2057,7 +2343,6 @@ def process_live_match():
 
     if state == "in":
 
-        # Events
         for item in extract_live_events(
             event
         ):
@@ -2129,7 +2414,7 @@ def process_live_match():
                 )
 
         # -------------------------------------------------
-        # SCORE/TIME UPDATE
+        # CLOCK
         # -------------------------------------------------
 
         status = event.get(
@@ -2224,16 +2509,20 @@ def main():
     )
 
     # -----------------------------------------------------
-    # TELEGRAM
+    # TELEGRAM CONNECTION
     # -----------------------------------------------------
 
     if not telegram_check_bot():
 
         logger.error(
-            "Telegram bot connection failed."
+            "Telegram access check FAILED."
         )
 
         return
+
+    logger.info(
+        "Telegram channel access OK."
+    )
 
     # -----------------------------------------------------
     # NEWS
@@ -2279,4 +2568,5 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
+
     main()
