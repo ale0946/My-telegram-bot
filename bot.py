@@ -5,116 +5,122 @@ import asyncio
 import aiohttp
 
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 load_dotenv()
 
+# ==============================
+# CONFIG
+# ==============================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 API_HASH = os.getenv("API_HASH")
-SOURCE_CHANNELS = [
-    x.strip() for x in os.getenv("SOURCE_CHANNELS", "").split(",") if x.strip()
-]
 
 try:
     API_ID = int(os.getenv("API_ID", "0"))
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-except ValueError:
+except:
     API_ID = 0
     ADMIN_ID = 0
 
-CHANNEL = "@yegnaLiverpool"
+TARGET_CHANNEL = "@yegnaLiverpool"
+
+SOURCE_CHANNELS = [
+    x.strip()
+    for x in os.getenv("SOURCE_CHANNELS", "").split(",")
+    if x.strip()
+]
+
 TEAM_ID = 40
 
+# ==============================
+# STORAGE
+# ==============================
+
 os.makedirs("data", exist_ok=True)
-FILE = "data/posted_news.json"
+
+POSTED_FILE = "data/posted_news.json"
 
 try:
-    with open(FILE, "r", encoding="utf-8") as f:
-        posted = set(json.load(f))
-except Exception:
-    posted = set()
-
-news_enabled = True
-live_enabled = True
-last_live = {}
+    with open(POSTED_FILE, "r", encoding="utf-8") as f:
+        posted_news = set(json.load(f))
+except:
+    posted_news = set()
 
 
-def save():
-    with open(FILE, "w", encoding="utf-8") as f:
-        json.dump(list(posted)[-5000:], f, ensure_ascii=False)
+def save_posted():
+    with open(POSTED_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            list(posted_news)[-5000:],
+            f,
+            ensure_ascii=False
+        )
 
 
-def clean_news(text):
+# ==============================
+# CLEAN TEXT
+# ==============================
+
+def clean_text(text):
+
     lines = []
 
     for line in text.splitlines():
+
         line = line.strip()
         low = line.lower()
 
         if not line:
             continue
+
         if "liverpool news" in low:
             continue
+
         if low.startswith("source:"):
             continue
+
         if low.startswith("ምንጭ:"):
             continue
+
         if "@yegnaLiverpool" in line:
             continue
 
         lines.append(line)
 
-    text = "\n".join(lines).strip()
+    result = "\n".join(lines).strip()
 
-    return f"{text}\n\n@yegnaLiverpool"
+    if not result:
+        result = "🔴 Liverpool News"
+
+    return result + "\n\n@yegnaLiverpool"
 
 
-async def send_news(text, bot, photo=None):
+# ==============================
+# HASH
+# ==============================
 
-    if not news_enabled:
-        return
+def make_hash(text):
 
-    news_id = hashlib.sha256(
-        " ".join(text.lower().split()).encode()
+    return hashlib.sha256(
+        " ".join(text.lower().split()).encode("utf-8")
     ).hexdigest()
 
-    if news_id in posted:
-        return
 
-    caption = clean_news(text)
+# ==============================
+# TELEGRAM SOURCE
+# ==============================
 
-    try:
-        if photo:
-            await bot.send_photo(
-                chat_id=CHANNEL,
-                photo=photo,
-                caption=caption[:1024]
-            )
-        else:
-            await bot.send_message(
-                chat_id=CHANNEL,
-                text=caption
-            )
-
-        posted.add(news_id)
-        save()
-        print("✅ News sent")
-
-    except Exception as e:
-        print("❌ Send error:", e)
-
-
-async def source_monitor(app):
+async def fetch_source_news(app):
 
     if not API_ID or not API_HASH:
-        print("⚠️ API_ID/API_HASH missing")
+        print("❌ API_ID/API_HASH missing")
         return
 
     if not SOURCE_CHANNELS:
-        print("⚠️ SOURCE_CHANNELS missing")
+        print("❌ SOURCE_CHANNELS missing")
         return
 
     client = TelegramClient(
@@ -123,40 +129,113 @@ async def source_monitor(app):
         API_HASH
     )
 
-    await client.start()
+    try:
 
-    print("✅ Source monitor started")
+        await client.start()
 
-    @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
-    async def new_message(event):
+        print("✅ Telegram source connected")
 
-        try:
-            text = event.raw_text or ""
+        for channel in SOURCE_CHANNELS:
 
-            # Image exists
-            if event.message.photo:
-                photo = await event.message.download_media(
-                    file=bytes
+            try:
+
+                print(f"🔎 Checking {channel}")
+
+                messages = await client.get_messages(
+                    channel,
+                    limit=5
                 )
 
-                if text or photo:
-                    await send_news(
-                        text,
-                        app.bot,
-                        photo
+                for msg in reversed(messages):
+
+                    if not msg:
+                        continue
+
+                    text = msg.text or ""
+
+                    photo = None
+
+                    # ==========================
+                    # DOWNLOAD PHOTO
+                    # ==========================
+
+                    if msg.photo:
+
+                        photo = await client.download_media(
+                            msg,
+                            file=bytes
+                        )
+
+                    if not text and not photo:
+                        continue
+
+                    # ==========================
+                    # DUPLICATE
+                    # ==========================
+
+                    unique_text = (
+                        text
+                        + "_"
+                        + str(msg.id)
+                        + "_"
+                        + channel
                     )
 
-            elif text:
-                await send_news(
-                    text,
-                    app.bot
+                    news_id = make_hash(unique_text)
+
+                    if news_id in posted_news:
+                        continue
+
+                    caption = clean_text(text)
+
+                    # ==========================
+                    # SEND
+                    # ==========================
+
+                    if photo:
+
+                        await app.bot.send_photo(
+                            chat_id=TARGET_CHANNEL,
+                            photo=photo,
+                            caption=caption[:1024]
+                        )
+
+                    else:
+
+                        await app.bot.send_message(
+                            chat_id=TARGET_CHANNEL,
+                            text=caption
+                        )
+
+                    posted_news.add(news_id)
+                    save_posted()
+
+                    print(
+                        f"✅ Sent from {channel}"
+                    )
+
+            except Exception as e:
+
+                print(
+                    f"❌ Error reading {channel}:",
+                    e
                 )
 
-        except Exception as e:
-            print("❌ Source error:", e)
+    except Exception as e:
 
-    await client.run_until_disconnected()
+        print(
+            "❌ Telegram connection error:",
+            e
+        )
 
+    finally:
+
+        await client.disconnect()
+
+
+# ==============================
+# FOOTBALL API
+# ==============================
 
 async def football_request(endpoint):
 
@@ -164,25 +243,42 @@ async def football_request(endpoint):
         return None
 
     try:
+
         async with aiohttp.ClientSession() as session:
+
             async with session.get(
-                "https://v3.football.api-sports.io/" + endpoint,
-                headers={"x-apisports-key": FOOTBALL_API_KEY},
+                "https://v3.football.api-sports.io/"
+                + endpoint,
+                headers={
+                    "x-apisports-key":
+                    FOOTBALL_API_KEY
+                },
                 timeout=20
-            ) as r:
-                if r.status != 200:
+            ) as response:
+
+                if response.status != 200:
                     return None
-                return await r.json()
+
+                return await response.json()
 
     except Exception as e:
-        print("API error:", e)
+
+        print(
+            "Football API error:",
+            e
+        )
+
         return None
 
 
-async def check_live(app):
+# ==============================
+# LIVE MATCH
+# ==============================
 
-    if not live_enabled:
-        return
+last_live = {}
+
+
+async def check_live(app):
 
     data = await football_request(
         f"fixtures?team={TEAM_ID}&live=all"
@@ -191,118 +287,143 @@ async def check_live(app):
     if not data:
         return
 
-    for game in data.get("response", []):
+    for game in data.get(
+        "response",
+        []
+    ):
 
         fixture = game["fixture"]
         teams = game["teams"]
         goals = game["goals"]
         status = fixture["status"]
 
-        fid = fixture["id"]
+        fixture_id = fixture["id"]
 
-        state = (
-            goals.get("home"),
-            goals.get("away"),
-            status.get("elapsed"),
-            status.get("short")
-        )
+        state = {
+            "home": goals.get("home"),
+            "away": goals.get("away"),
+            "minute": status.get("elapsed"),
+            "status": status.get("short")
+        }
 
-        if last_live.get(fid) == state:
+        if last_live.get(fixture_id) == state:
             continue
 
-        last_live[fid] = state
+        last_live[fixture_id] = state
 
         home = teams["home"]["name"]
         away = teams["away"]["name"]
 
         message = (
-            f"⚽ {home} {goals.get('home') or 0} - "
-            f"{goals.get('away') or 0} {away}\n\n"
+            f"⚽ {home} "
+            f"{goals.get('home') or 0} - "
+            f"{goals.get('away') or 0} "
+            f"{away}\n\n"
         )
 
-        if status["short"] == "HT":
-            message += "⏸️ የመጀመሪያው አጋማሽ ተጠናቋል"
-        elif status["short"] in ["FT", "AET", "PEN"]:
-            message += "🏁 ጨዋታው ተጠናቋል"
+        if status.get("short") == "HT":
+
+            message += (
+                "⏸️ የመጀመሪያው አጋማሽ "
+                "ተጠናቋል"
+            )
+
+        elif status.get("short") in [
+            "FT",
+            "AET",
+            "PEN"
+        ]:
+
+            message += (
+                "🏁 ጨዋታው ተጠናቋል"
+            )
+
         else:
-            message += f"⏱️ {status.get('elapsed') or 0}'\n🔴 ጨዋታው ቀጥሏል"
+
+            message += (
+                f"⏱️ {status.get('elapsed') or 0}'\n"
+                "🔴 ጨዋታው ቀጥሏል"
+            )
 
         message += "\n\n@yegnaLiverpool"
 
         try:
+
             await app.bot.send_message(
-                chat_id=CHANNEL,
+                chat_id=TARGET_CHANNEL,
                 text=message
             )
+
+            print("⚽ LIVE sent")
+
         except Exception as e:
-            print("LIVE error:", e)
+
+            print(
+                "LIVE error:",
+                e
+            )
 
 
 async def live_job(context):
-    await check_live(context.application)
+
+    await check_live(
+        context.application
+    )
 
 
-def admin(update):
-    return update.effective_user and update.effective_user.id == ADMIN_ID
+# ==============================
+# ADMIN
+# ==============================
+
+def is_admin(update):
+
+    return (
+        update.effective_user
+        and update.effective_user.id == ADMIN_ID
+    )
 
 
 async def start(update, context):
-    await update.message.reply_text("🔴 Liverpool Bot ተጀምሯል።")
+
+    await update.message.reply_text(
+        "🔴 Liverpool Bot started"
+    )
 
 
 async def status(update, context):
-    if not admin(update):
+
+    if not is_admin(update):
         return
 
     await update.message.reply_text(
-        f"📰 News: {'ON' if news_enabled else 'OFF'}\n"
-        f"⚽ Live: {'ON' if live_enabled else 'OFF'}"
+        "🔴 Liverpool Bot is running"
     )
 
 
-async def on(update, context):
-    global news_enabled
-
-    if admin(update):
-        news_enabled = True
-        await update.message.reply_text("🟢 News ON")
-
-
-async def off(update, context):
-    global news_enabled
-
-    if admin(update):
-        news_enabled = False
-        await update.message.reply_text("🔴 News OFF")
-
-
-async def liveon(update, context):
-    global live_enabled
-
-    if admin(update):
-        live_enabled = True
-        await update.message.reply_text("⚽ Live ON")
-
-
-async def liveoff(update, context):
-    global live_enabled
-
-    if admin(update):
-        live_enabled = False
-        await update.message.reply_text("⛔ Live OFF")
-
+# ==============================
+# STARTUP
+# ==============================
 
 async def post_init(app):
 
-    asyncio.create_task(
-        source_monitor(app)
+    # Check source channels immediately
+    await fetch_source_news(app)
+
+    print(
+        "✅ Source check completed"
     )
 
+
+# ==============================
+# MAIN
+# ==============================
 
 def main():
 
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN missing")
+        raise ValueError(
+            "BOT_TOKEN missing"
+        )
 
     app = (
         Application.builder()
@@ -311,23 +432,33 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("on", on))
-    app.add_handler(CommandHandler("off", off))
-    app.add_handler(CommandHandler("liveon", liveon))
-    app.add_handler(CommandHandler("liveoff", liveoff))
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "status",
+            status
+        )
+    )
 
     app.job_queue.run_repeating(
         live_job,
         interval=300,
-        first=10
+        first=30
     )
 
-    print("🔴 Liverpool Bot started")
+    print(
+        "🔴 Liverpool Bot started!"
+    )
 
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
+
