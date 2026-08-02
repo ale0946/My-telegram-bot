@@ -1,3 +1,47 @@
+import os
+import re
+import json
+import time
+import hashlib
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from urllib.parse import quote_plus, urlparse
+
+import feedparser
+import requests
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from groq import Groq
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@yegnaLiverpool").strip()
+
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b"
+).strip()
+
+MAX_NEWS_AGE_HOURS = int(
+    os.getenv("MAX_NEWS_AGE_HOURS", "24")
+)
+
+# Check interval is controlled by GitHub Actions.
+# 5 minutes is recommended for LIVE match coverage.
+CHECK_INTERVAL_MINUTES = int(
+    os.getenv("CHECK_INTERVAL_MINUTES", "5")
+)
+
+# ESPN Liverpool team ID
+LIVERPOOL_TEAM_ID = "364"
 
 # =========================================================
 # VALIDATION
@@ -52,6 +96,16 @@ CREATE TABLE IF NOT EXISTS posted_news (
     title TEXT,
     url TEXT,
     source TEXT,
+    posted_at TEXT
+)
+""")
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS live_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key TEXT UNIQUE,
+    event_type TEXT,
+    event_text TEXT,
     posted_at TEXT
 )
 """)
@@ -127,6 +181,18 @@ def clean_text(text):
     return text.strip()
 
 
+def escape_html(text):
+    if not text:
+        return ""
+
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def make_fingerprint(title, url):
     raw = (
         clean_text(title).lower()
@@ -178,15 +244,58 @@ def save_posted(
 
 
 # =========================================================
+# LIVE EVENT DATABASE
+# =========================================================
+
+def live_event_already_posted(event_key):
+    row = db.execute(
+        """
+        SELECT 1
+        FROM live_events
+        WHERE event_key = ?
+        LIMIT 1
+        """,
+        (event_key,)
+    ).fetchone()
+
+    return row is not None
+
+
+def save_live_event(
+    event_key,
+    event_type,
+    event_text
+):
+    db.execute(
+        """
+        INSERT OR IGNORE INTO live_events
+        (event_key, event_type, event_text, posted_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            event_key,
+            event_type,
+            event_text,
+            datetime.now(timezone.utc).isoformat()
+        )
+    )
+
+    db.commit()
+
+
+# =========================================================
 # DATE
 # =========================================================
 
 def parse_entry_time(entry):
+
     try:
+
         if (
             hasattr(entry, "published_parsed")
             and entry.published_parsed
         ):
+
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.published_parsed
@@ -198,6 +307,7 @@ def parse_entry_time(entry):
             hasattr(entry, "updated_parsed")
             and entry.updated_parsed
         ):
+
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.updated_parsed
@@ -206,6 +316,7 @@ def parse_entry_time(entry):
             )
 
     except Exception as e:
+
         logger.warning(
             "Date parsing error: %s",
             e
@@ -215,6 +326,7 @@ def parse_entry_time(entry):
 
 
 def is_recent(entry):
+
     published = parse_entry_time(entry)
 
     if not published:
@@ -277,6 +389,188 @@ def get_google_news(query):
 
 
 # =========================================================
+# IMAGE HELPERS
+# =========================================================
+
+def get_feed_image(entry):
+
+    # media_content
+    try:
+
+        media_content = getattr(
+            entry,
+            "media_content",
+            []
+        )
+
+        for media in media_content:
+
+            image_url = media.get(
+                "url",
+                ""
+            )
+
+            if image_url:
+                return image_url
+
+    except Exception:
+        pass
+
+    # media_thumbnail
+    try:
+
+        media_thumbnail = getattr(
+            entry,
+            "media_thumbnail",
+            []
+        )
+
+        for media in media_thumbnail:
+
+            image_url = media.get(
+                "url",
+                ""
+            )
+
+            if image_url:
+                return image_url
+
+    except Exception:
+        pass
+
+    # Enclosures
+    try:
+
+        enclosures = getattr(
+            entry,
+            "enclosures",
+            []
+        )
+
+        for enclosure in enclosures:
+
+            image_url = enclosure.get(
+                "href",
+                ""
+            )
+
+            if image_url:
+                return image_url
+
+    except Exception:
+        pass
+
+    # Search summary HTML for image
+    try:
+
+        summary = getattr(
+            entry,
+            "summary",
+            ""
+        )
+
+        soup = BeautifulSoup(
+            summary,
+            "html.parser"
+        )
+
+        image = soup.find("img")
+
+        if image:
+
+            image_url = image.get(
+                "src",
+                ""
+            )
+
+            if image_url:
+                return image_url
+
+    except Exception:
+        pass
+
+    return ""
+
+
+def get_page_image(url):
+
+    if not url:
+        return ""
+
+    try:
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20
+        )
+
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        # Open Graph image
+        og_image = soup.find(
+            "meta",
+            property="og:image"
+        )
+
+        if og_image:
+
+            image_url = og_image.get(
+                "content",
+                ""
+            )
+
+            if image_url:
+                return image_url
+
+        # Twitter image
+        twitter_image = soup.find(
+            "meta",
+            attrs={
+                "name": "twitter:image"
+            }
+        )
+
+        if twitter_image:
+
+            image_url = twitter_image.get(
+                "content",
+                ""
+            )
+
+            if image_url:
+                return image_url
+
+    except Exception as e:
+
+        logger.warning(
+            "Could not get page image: %s",
+            e
+        )
+
+    return ""
+
+
+def get_article_image(entry, url):
+
+    image_url = get_feed_image(
+        entry
+    )
+
+    if image_url:
+        return image_url
+
+    return get_page_image(
+        url
+    )
+
+
+# =========================================================
 # NEWS COLLECTION
 # =========================================================
 
@@ -324,11 +618,17 @@ def collect_news():
             if not title or not url:
                 continue
 
+            image_url = get_article_image(
+                entry,
+                url
+            )
+
             articles.append({
                 "title": title,
                 "url": url,
                 "summary": summary,
-                "source": "Liverpool FC Official"
+                "source": "Liverpool FC Official",
+                "image_url": image_url
             })
 
     # -----------------------------------------------------
@@ -395,11 +695,17 @@ def collect_news():
             if not title or not url:
                 continue
 
+            image_url = get_article_image(
+                entry,
+                url
+            )
+
             articles.append({
                 "title": title,
                 "url": url,
                 "summary": summary,
-                "source": source_name
+                "source": source_name,
+                "image_url": image_url
             })
 
     logger.info(
@@ -446,39 +752,46 @@ def appears_liverpool_related(
 # =========================================================
 
 SYSTEM_PROMPT = """
-You are the Liverpool FC News Assistant for an Amharic Telegram channel.
+አንተ ለLiverpool FC የአማርኛ Telegram የዜና አርታኢ ነህ።
 
-STRICT RULES:
+ዋና ዓላማህ የተሰጠህን የዜና መረጃ ብቻ ተጠቅመህ
+ግልጽ፣ ተፈጥሯዊ እና የስፖርት ዘገባ የሚመስል
+አማርኛ ማዘጋጀት ነው።
 
-1. Use ONLY information supplied in the article.
-2. Never invent facts.
-3. Never invent quotes.
-4. Never invent transfer fees.
-5. Never invent dates.
-6. Never invent injuries.
-7. Never invent contract information.
-8. Never turn a rumour into a confirmed fact.
-9. Preserve uncertainty when the source is uncertain.
-10. The article must clearly concern Liverpool FC.
-11. The output must be natural professional Amharic.
-12. Do not output an English paragraph.
-13. Do not output an English headline.
-14. Do not use clickbait.
-15. Do not repeat information unnecessarily.
-16. If unsuitable, return REJECT.
-17. Rumours must clearly be labelled as reports/rumours.
+ጥብቅ ህጎች፦
 
-Return JSON only.
+1. ከተሰጠው article ውጭ ምንም እውነታ አትጨምር።
+2. ምንም quote አትፍጠር።
+3. የዝውውር ዋጋ አትፍጠር።
+4. ቀን አትፍጠር።
+5. ጉዳት አትፍጠር።
+6. የውል መረጃ አትፍጠር።
+7. Rumour/report ከሆነ እንደተረጋገጠ አትጻፍ።
+8. እርግጠኛ ያልሆነ መረጃ እርግጠኛ እንደሆነ አታቅርብ።
+9. ዜናው በግልጽ Liverpool FC ላይ ካልሆነ REJECT በል።
+10. አማርኛው ተፈጥሯዊ የስፖርት አማርኛ ይሁን።
+11. እንግሊዝኛን ቃል በቃል አትተርጉም።
+12. English headline አትጻፍ።
+13. English paragraph አትጻፍ።
+14. Clickbait አትጠቀም።
+15. ተመሳሳይ ሀሳብን ደጋግመህ አትጻፍ።
+16. የዜናውን ዋና ነጥብ በግልጽ አማርኛ አቅርብ።
+17. ስሞችን በተቻለ መጠን ትክክል ጠብቅ።
+
+JSON ብቻ መልስ።
 
 Format:
 
 {
   "decision": "POST" or "REJECT",
   "category": "news/transfer/rumour/injury/match/other",
-  "headline": "Amharic headline",
-  "body": "Amharic body",
+  "headline": "አጭር ተፈጥሯዊ የአማርኛ ርዕስ",
+  "body": "ተፈጥሯዊ የአማርኛ ዜና ይዘት",
   "confidence": 0-100
 }
+
+POST ማለት ለTelegram ተስማሚ ነው።
+REJECT ማለት አትለጥፍ።
 """
 
 
@@ -513,9 +826,12 @@ TITLE:
 ARTICLE SUMMARY:
 {summary}
 
-Analyze the article.
+ይህን ዜና በተሰጡት ህጎች መሰረት ተንትነው።
 
-Return JSON only.
+የመጨረሻው ውጤት ተፈጥሯዊ የሆነ
+የስፖርት አማርኛ ይሁን።
+
+JSON only.
 """
 
     try:
@@ -555,7 +871,9 @@ Return JSON only.
             .content
         )
 
-        return json.loads(content)
+        return json.loads(
+            content
+        )
 
     except Exception as e:
 
@@ -568,7 +886,7 @@ Return JSON only.
 
 
 # =========================================================
-# TELEGRAM SEND
+# TELEGRAM SEND TEXT
 # =========================================================
 
 def telegram_send_message(
@@ -584,7 +902,7 @@ def telegram_send_message(
         "chat_id": CHANNEL_ID,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False
+        "disable_web_page_preview": True
     }
 
     try:
@@ -628,13 +946,75 @@ def telegram_send_message(
 
 
 # =========================================================
-# FORMAT MESSAGE
+# TELEGRAM SEND PHOTO
+# =========================================================
+
+def telegram_send_photo(
+    image_url,
+    caption
+):
+
+    if not image_url:
+        return False
+
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{BOT_TOKEN}/sendPhoto"
+    )
+
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "photo": image_url,
+        "caption": caption,
+        "parse_mode": "HTML"
+    }
+
+    try:
+
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=30
+        )
+
+        if response.status_code != 200:
+
+            logger.error(
+                "Telegram photo error: %s",
+                response.text
+            )
+
+            return False
+
+        data = response.json()
+
+        if not data.get("ok"):
+
+            logger.error(
+                "Telegram rejected photo: %s",
+                data
+            )
+
+            return False
+
+        return True
+
+    except Exception as e:
+
+        logger.error(
+            "Telegram photo connection error: %s",
+            e
+        )
+
+        return False
+
+
+# =========================================================
+# FORMAT NEWS
 # =========================================================
 
 def build_telegram_message(
-    result,
-    source,
-    url
+    result
 ):
 
     headline = clean_text(
@@ -651,71 +1031,21 @@ def build_telegram_message(
         )
     )
 
-    category = clean_text(
-        result.get(
-            "category",
-            "news"
-        )
-    ).lower()
-
     if not headline or not body:
         return None
 
-    category_map = {
-
-        "transfer":
-            "🔄 ዝውውር",
-
-        "rumour":
-            "🟡 ወሬ / ዘገባ",
-
-        "injury":
-            "🏥 የጤና ሁኔታ",
-
-        "match":
-            "⚽ ጨዋታ",
-
-        "news":
-            "📰 ዜና",
-
-        "other":
-            "📰 ዜና"
-    }
-
-    label = category_map.get(
-        category,
-        "📰 ዜና"
-    )
-
-    # Escape only dangerous HTML chars
-    headline = (
+    headline = escape_html(
         headline
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
     )
 
-    body = (
+    body = escape_html(
         body
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-    source = (
-        source
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
     )
 
     message = (
-        "🔴 <b>LIVERPOOL NEWS</b>\n\n"
         f"<b>{headline}</b>\n\n"
         f"{body}\n\n"
-        f"{label}\n"
-        f"📰 ምንጭ: {source}\n"
-        f'🔗 <a href="{url}">የመጀመሪያ ምንጭ</a>'
+        f"<b>@yegnaLiverpool</b>"
     )
 
     return message
@@ -737,13 +1067,13 @@ def process_article(article):
         ""
     )
 
-    source = article.get(
-        "source",
+    summary = article.get(
+        "summary",
         ""
     )
 
-    summary = article.get(
-        "summary",
+    image_url = article.get(
+        "image_url",
         ""
     )
 
@@ -838,27 +1168,61 @@ def process_article(article):
         return False
 
     if confidence < 75:
+
         logger.info(
             "Low confidence: %s",
             confidence
         )
+
         return False
 
     # -----------------------------------------------------
-    # Build
+    # Build message
     # -----------------------------------------------------
 
     message = build_telegram_message(
-        result,
-        source,
-        url
+        result
     )
 
     if not message:
         return False
 
     # -----------------------------------------------------
-    # SEND DIRECTLY TO TELEGRAM
+    # PHOTO FIRST
+    # -----------------------------------------------------
+
+    if image_url:
+
+        sent = telegram_send_photo(
+            image_url,
+            message
+        )
+
+        if sent:
+
+            save_posted(
+                fingerprint,
+                title,
+                url,
+                article.get(
+                    "source",
+                    ""
+                )
+            )
+
+            logger.info(
+                "✅ POSTED WITH IMAGE: %s",
+                title
+            )
+
+            return True
+
+        logger.warning(
+            "Image failed. Trying text post..."
+        )
+
+    # -----------------------------------------------------
+    # TEXT FALLBACK
     # -----------------------------------------------------
 
     sent = telegram_send_message(
@@ -866,22 +1230,26 @@ def process_article(article):
     )
 
     if not sent:
+
         logger.error(
             "NOT POSTED: %s",
             title
         )
+
         return False
 
-    # Save only AFTER successful Telegram post
     save_posted(
         fingerprint,
         title,
         url,
-        source
+        article.get(
+            "source",
+            ""
+        )
     )
 
     logger.info(
-        "✅ POSTED TO TELEGRAM: %s",
+        "✅ POSTED TEXT ONLY: %s",
         title
     )
 
@@ -939,9 +1307,671 @@ def check_news():
     )
 
     logger.info(
-        "Finished. Posted: %s",
+        "News finished. Posted: %s",
         posted_count
     )
+
+
+# =========================================================
+# ESPN LIVE DATA
+# =========================================================
+
+def get_liverpool_scoreboard():
+
+    url = (
+        "https://site.api.espn.com/apis/site/v2/sports/"
+        "soccer/eng.1/scoreboard"
+    )
+
+    try:
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+
+    except Exception as e:
+
+        logger.error(
+            "ESPN scoreboard error: %s",
+            e
+        )
+
+        return None
+
+
+# =========================================================
+# FIND LIVERPOOL MATCH
+# =========================================================
+
+def find_liverpool_match(data):
+
+    if not data:
+        return None
+
+    events = data.get(
+        "events",
+        []
+    )
+
+    for event in events:
+
+        competitions = event.get(
+            "competitions",
+            []
+        )
+
+        for competition in competitions:
+
+            competitors = competition.get(
+                "competitors",
+                []
+            )
+
+            for team in competitors:
+
+                team_info = team.get(
+                    "team",
+                    {}
+                )
+
+                team_id = str(
+                    team_info.get(
+                        "id",
+                        ""
+                    )
+                )
+
+                if team_id == LIVERPOOL_TEAM_ID:
+
+                    return event
+
+    return None
+
+
+# =========================================================
+# MATCH STATUS
+# =========================================================
+
+def get_match_status(event):
+
+    status = (
+        event
+        .get("status", {})
+    )
+
+    type_data = status.get(
+        "type",
+        {}
+    )
+
+    state = type_data.get(
+        "state",
+        ""
+    )
+
+    name = type_data.get(
+        "name",
+        ""
+    )
+
+    detail = type_data.get(
+        "detail",
+        ""
+    )
+
+    return state, name, detail
+
+
+# =========================================================
+# MATCH TEAMS
+# =========================================================
+
+def get_match_teams(event):
+
+    competitors = (
+        event
+        .get(
+            "competitions",
+            [{}]
+        )[0]
+        .get(
+            "competitors",
+            []
+        )
+    )
+
+    home = None
+    away = None
+
+    for team in competitors:
+
+        if team.get(
+            "homeAway"
+        ) == "home":
+
+            home = team
+
+        elif team.get(
+            "homeAway"
+        ) == "away":
+
+            away = team
+
+    return home, away
+
+
+# =========================================================
+# MATCH SCORE TEXT
+# =========================================================
+
+def match_score_text(
+    home,
+    away
+):
+
+    if not home or not away:
+        return ""
+
+    home_name = home.get(
+        "team",
+        {}
+    ).get(
+        "displayName",
+        "Home"
+    )
+
+    away_name = away.get(
+        "team",
+        {}
+    ).get(
+        "displayName",
+        "Away"
+    )
+
+    home_score = home.get(
+        "score",
+        "0"
+    )
+
+    away_score = away.get(
+        "score",
+        "0"
+    )
+
+    return (
+        f"{home_name} {home_score} - "
+        f"{away_score} {away_name}"
+    )
+
+
+# =========================================================
+# LIVE EVENT EXTRACTION
+# =========================================================
+
+def extract_live_events(event):
+
+    result = []
+
+    competitions = event.get(
+        "competitions",
+        []
+    )
+
+    if not competitions:
+        return result
+
+    competition = competitions[0]
+
+    details = competition.get(
+        "details",
+        []
+    )
+
+    for detail in details:
+
+        athlete = detail.get(
+            "athlete",
+            {}
+        )
+
+        player_name = athlete.get(
+            "displayName",
+            ""
+        )
+
+        type_data = detail.get(
+            "type",
+            {}
+        )
+
+        event_type = type_data.get(
+            "text",
+            ""
+        ).lower()
+
+        clock = detail.get(
+            "clock",
+            {}
+        )
+
+        display_value = clock.get(
+            "displayValue",
+            ""
+        )
+
+        if not display_value:
+
+            display_value = (
+                detail
+                .get(
+                    "clock",
+                    {}
+                )
+                .get(
+                    "value",
+                    ""
+                )
+            )
+
+        team = detail.get(
+            "team",
+            {}
+        )
+
+        team_id = str(
+            team.get(
+                "id",
+                ""
+            )
+        )
+
+        if team_id != LIVERPOOL_TEAM_ID:
+            continue
+
+        if "goal" in event_type:
+
+            result.append({
+                "type": "goal",
+                "player": player_name,
+                "minute": display_value,
+                "raw": detail
+            })
+
+        elif "yellow" in event_type:
+
+            result.append({
+                "type": "yellow",
+                "player": player_name,
+                "minute": display_value,
+                "raw": detail
+            })
+
+        elif "red" in event_type:
+
+            result.append({
+                "type": "red",
+                "player": player_name,
+                "minute": display_value,
+                "raw": detail
+            })
+
+        elif (
+            "substitution" in event_type
+            or "substitute" in event_type
+        ):
+
+            result.append({
+                "type": "substitution",
+                "player": player_name,
+                "minute": display_value,
+                "raw": detail
+            })
+
+    return result
+
+
+# =========================================================
+# LIVE MESSAGE
+# =========================================================
+
+def build_live_message(
+    event,
+    event_type,
+    extra_text=""
+):
+
+    home, away = get_match_teams(
+        event
+    )
+
+    score = match_score_text(
+        home,
+        away
+    )
+
+    state, name, detail = get_match_status(
+        event
+    )
+
+    if event_type == "start":
+
+        message = (
+            "🔴 <b>የጨዋታ መጀመሪያ</b>\n\n"
+            f"⚽ {escape_html(score)}\n\n"
+            f"▶️ {escape_html(detail or name)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    elif event_type == "goal":
+
+        message = (
+            "⚽ <b>ጎል!</b>\n\n"
+            f"{escape_html(score)}\n\n"
+            f"{escape_html(extra_text)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    elif event_type == "yellow":
+
+        message = (
+            "🟨 <b>ቢጫ ካርድ</b>\n\n"
+            f"{escape_html(extra_text)}\n\n"
+            f"{escape_html(score)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    elif event_type == "red":
+
+        message = (
+            "🟥 <b>ቀይ ካርድ</b>\n\n"
+            f"{escape_html(extra_text)}\n\n"
+            f"{escape_html(score)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    elif event_type == "substitution":
+
+        message = (
+            "🔄 <b>ቅያሬ</b>\n\n"
+            f"{escape_html(extra_text)}\n\n"
+            f"{escape_html(score)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    elif event_type == "halftime":
+
+        message = (
+            "⏸️ <b>እረፍት</b>\n\n"
+            f"⚽ {escape_html(score)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    elif event_type == "fulltime":
+
+        message = (
+            "🏁 <b>ጨዋታው ተጠናቋል</b>\n\n"
+            f"⚽ {escape_html(score)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    else:
+
+        message = (
+            "⚽ <b>LIVE</b>\n\n"
+            f"{escape_html(score)}\n\n"
+            f"{escape_html(extra_text)}\n\n"
+            "<b>@yegnaLiverpool</b>"
+        )
+
+    return message
+
+
+# =========================================================
+# PROCESS LIVE MATCH
+# =========================================================
+
+def process_live_match():
+
+    logger.info(
+        "⚽ Checking Liverpool LIVE match..."
+    )
+
+    data = get_liverpool_scoreboard()
+
+    if not data:
+
+        logger.warning(
+            "No live data received."
+        )
+
+        return
+
+    event = find_liverpool_match(
+        data
+    )
+
+    # -----------------------------------------------------
+    # NO LIVERPOOL MATCH
+    # -----------------------------------------------------
+
+    if not event:
+
+        logger.info(
+            "No Liverpool match today."
+        )
+
+        return
+
+    event_id = str(
+        event.get(
+            "id",
+            ""
+        )
+    )
+
+    state, name, detail = get_match_status(
+        event
+    )
+
+    home, away = get_match_teams(
+        event
+    )
+
+    logger.info(
+        "Liverpool match found: %s",
+        match_score_text(
+            home,
+            away
+        )
+    )
+
+    # -----------------------------------------------------
+    # MATCH STATUS EVENT
+    # -----------------------------------------------------
+
+    status_key = (
+        f"{event_id}|status|{state}|{name}|{detail}"
+    )
+
+    if state == "pre":
+
+        if not live_event_already_posted(
+            status_key
+        ):
+
+            message = build_live_message(
+                event,
+                "start",
+                "የLiverpool ጨዋታ ሊጀምር ነው።"
+            )
+
+            if telegram_send_message(
+                message
+            ):
+
+                save_live_event(
+                    status_key,
+                    "start",
+                    message
+                )
+
+    elif state == "in":
+
+        # -------------------------------------------------
+        # Goal / card / substitution events
+        # -------------------------------------------------
+
+        live_events = extract_live_events(
+            event
+        )
+
+        for item in live_events:
+
+            event_key = (
+                f"{event_id}|"
+                f"{item['type']}|"
+                f"{item.get('player', '')}|"
+                f"{item.get('minute', '')}"
+            )
+
+            if live_event_already_posted(
+                event_key
+            ):
+                continue
+
+            player = item.get(
+                "player",
+                ""
+            )
+
+            minute = item.get(
+                "minute",
+                ""
+            )
+
+            if item["type"] == "goal":
+
+                extra = (
+                    f"⚽ {player} "
+                    f"በ{minute}' ጎል አስቆጠረ።"
+                )
+
+            elif item["type"] == "yellow":
+
+                extra = (
+                    f"🟨 {player} "
+                    f"በ{minute}' ቢጫ ካርድ ተመልክቷል።"
+                )
+
+            elif item["type"] == "red":
+
+                extra = (
+                    f"🟥 {player} "
+                    f"በ{minute}' ቀይ ካርድ ተመልክቷል።"
+                )
+
+            else:
+
+                extra = (
+                    f"🔄 {player} "
+                    f"በ{minute}' ቅያሬ ተደርጓል።"
+                )
+
+            message = build_live_message(
+                event,
+                item["type"],
+                extra
+            )
+
+            if telegram_send_message(
+                message
+            ):
+
+                save_live_event(
+                    event_key,
+                    item["type"],
+                    message
+                )
+
+        # -------------------------------------------------
+        # 5-minute score/status update
+        # -------------------------------------------------
+
+        minute_key = (
+            event
+            .get(
+                "status",
+                {}
+            )
+            .get(
+                "displayClock",
+                ""
+            )
+        )
+
+        if minute_key:
+
+            update_key = (
+                f"{event_id}|score|{minute_key}"
+            )
+
+            if not live_event_already_posted(
+                update_key
+            ):
+
+                message = build_live_message(
+                    event,
+                    "live",
+                    f"⏱️ የጨዋታ ሁኔታ፦ {minute_key}"
+                )
+
+                if telegram_send_message(
+                    message
+                ):
+
+                    save_live_event(
+                        update_key,
+                        "score_update",
+                        message
+                    )
+
+    elif state == "post":
+
+        fulltime_key = (
+            f"{event_id}|fulltime"
+        )
+
+        if not live_event_already_posted(
+            fulltime_key
+        ):
+
+            message = build_live_message(
+                event,
+                "fulltime"
+            )
+
+            if telegram_send_message(
+                message
+            ):
+
+                save_live_event(
+                    fulltime_key,
+                    "fulltime",
+                    message
+                )
+
+    else:
+
+        logger.info(
+            "Liverpool match state: %s",
+            state
+        )
 
 
 # =========================================================
@@ -949,6 +1979,10 @@ def check_news():
 # =========================================================
 
 def main():
+
+    logger.info(
+        "===================================="
+    )
 
     logger.info(
         "🔴 Liverpool News Bot starting..."
@@ -967,10 +2001,42 @@ def main():
         "Polling: DISABLED"
     )
 
-    check_news()
+    # -----------------------------------------------------
+    # NEWS MODE
+    # -----------------------------------------------------
+
+    try:
+
+        check_news()
+
+    except Exception as e:
+
+        logger.exception(
+            "News check failed: %s",
+            e
+        )
+
+    # -----------------------------------------------------
+    # LIVE MODE
+    # -----------------------------------------------------
+
+    try:
+
+        process_live_match()
+
+    except Exception as e:
+
+        logger.exception(
+            "LIVE match check failed: %s",
+            e
+        )
 
     logger.info(
-        "🏁 Bot finished."
+        "🏁 Bot check finished."
+    )
+
+    logger.info(
+        "===================================="
     )
 
 
