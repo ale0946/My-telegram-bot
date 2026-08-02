@@ -454,6 +454,7 @@ def resolve_article_url(url):
         final_url = response.url
 
         if final_url:
+
             logger.info(
                 "Resolved URL: %s",
                 final_url
@@ -849,10 +850,6 @@ def download_image(image_url):
             for x in valid_types
         ):
 
-            # Sometimes servers don't return
-            # correct content-type.
-            # Check actual file signatures.
-
             if not (
                 content.startswith(b"\xff\xd8\xff")
                 or content.startswith(b"\x89PNG")
@@ -888,15 +885,19 @@ def download_image(image_url):
         # -------------------------------------------------
 
         if "png" in content_type:
+
             filename = "liverpool_news.png"
 
         elif "webp" in content_type:
+
             filename = "liverpool_news.webp"
 
         elif "gif" in content_type:
+
             filename = "liverpool_news.gif"
 
         else:
+
             filename = "liverpool_news.jpg"
 
         logger.info(
@@ -1230,6 +1231,68 @@ JSON only.
 
 
 # =========================================================
+# TELEGRAM BOT CHECK
+# =========================================================
+
+def telegram_check_bot():
+
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{BOT_TOKEN}/getMe"
+    )
+
+    try:
+
+        response = requests.get(
+            url,
+            timeout=20
+        )
+
+        logger.info(
+            "Telegram getMe status: %s",
+            response.status_code
+        )
+
+        logger.info(
+            "Telegram getMe response: %s",
+            response.text
+        )
+
+        if response.status_code != 200:
+            return False
+
+        data = response.json()
+
+        if data.get("ok") is True:
+
+            bot_info = data.get(
+                "result",
+                {}
+            )
+
+            logger.info(
+                "Telegram bot connected: @%s",
+                bot_info.get(
+                    "username",
+                    "unknown"
+                )
+            )
+
+            return True
+
+        return False
+
+    except Exception as e:
+
+        logger.exception(
+            "Telegram bot check failed: %s",
+            e
+        )
+
+        return False
+
+
+# =========================================================
 # TELEGRAM SEND MESSAGE
 # =========================================================
 
@@ -1244,10 +1307,15 @@ def telegram_send_message(text):
         "chat_id": CHANNEL_ID,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True
+        "disable_web_page_preview": False
     }
 
     try:
+
+        logger.info(
+            "Sending TEXT to Telegram: %s",
+            CHANNEL_ID
+        )
 
         response = requests.post(
             url,
@@ -1255,31 +1323,39 @@ def telegram_send_message(text):
             timeout=30
         )
 
+        logger.info(
+            "Telegram TEXT status: %s",
+            response.status_code
+        )
+
+        logger.info(
+            "Telegram TEXT response: %s",
+            response.text
+        )
+
         if response.status_code != 200:
-
-            logger.error(
-                "Telegram API error: %s",
-                response.text
-            )
-
             return False
 
         data = response.json()
 
-        if not data.get("ok"):
+        if data.get("ok") is True:
 
-            logger.error(
-                "Telegram rejected message: %s",
-                data
+            logger.info(
+                "TEXT SENT SUCCESSFULLY"
             )
 
-            return False
+            return True
 
-        return True
+        logger.error(
+            "Telegram rejected message: %s",
+            data
+        )
+
+        return False
 
     except Exception as e:
 
-        logger.error(
+        logger.exception(
             "Telegram connection error: %s",
             e
         )
@@ -1320,6 +1396,14 @@ def telegram_send_photo(
 
         return False
 
+    # Telegram photo captions have a limited size.
+    if len(caption) > 1024:
+
+        caption = (
+            caption[:1020]
+            + "..."
+        )
+
     url = (
         f"https://api.telegram.org/bot"
         f"{BOT_TOKEN}/sendPhoto"
@@ -1331,9 +1415,9 @@ def telegram_send_photo(
 
     files = {
         "photo": (
-            filename,
+            filename or "liverpool_news.jpg",
             image_data,
-            "application/octet-stream"
+            "image/jpeg"
         )
     }
 
@@ -1345,6 +1429,11 @@ def telegram_send_photo(
 
     try:
 
+        logger.info(
+            "Sending PHOTO to Telegram: %s",
+            CHANNEL_ID
+        )
+
         response = requests.post(
             url,
             data=data,
@@ -1352,35 +1441,39 @@ def telegram_send_photo(
             timeout=60
         )
 
+        logger.info(
+            "Telegram PHOTO status: %s",
+            response.status_code
+        )
+
+        logger.info(
+            "Telegram PHOTO response: %s",
+            response.text
+        )
+
         if response.status_code != 200:
-
-            logger.error(
-                "Telegram photo error: %s",
-                response.text
-            )
-
             return False
 
         result = response.json()
 
-        if not result.get("ok"):
+        if result.get("ok") is True:
 
-            logger.error(
-                "Telegram rejected photo: %s",
-                result
+            logger.info(
+                "PHOTO SENT SUCCESSFULLY"
             )
 
-            return False
+            return True
 
-        logger.info(
-            "PHOTO SENT SUCCESSFULLY"
+        logger.error(
+            "Telegram rejected photo: %s",
+            result
         )
 
-        return True
+        return False
 
     except Exception as e:
 
-        logger.error(
+        logger.exception(
             "Telegram photo connection error: %s",
             e
         )
@@ -1573,7 +1666,8 @@ def process_article(article):
     if image_url:
 
         logger.info(
-            "Trying article image..."
+            "Trying article image: %s",
+            image_url
         )
 
         sent = telegram_send_photo(
@@ -1621,6 +1715,11 @@ def process_article(article):
             and fallback_image != image_url
         ):
 
+            logger.info(
+                "Trying fallback image: %s",
+                fallback_image
+            )
+
             sent = telegram_send_photo(
                 fallback_image,
                 message
@@ -1645,9 +1744,19 @@ def process_article(article):
 
                 return True
 
+    else:
+
+        logger.info(
+            "No article image found."
+        )
+
     # -----------------------------------------------------
     # TEXT FALLBACK
     # -----------------------------------------------------
+
+    logger.info(
+        "Trying TEXT fallback..."
+    )
 
     sent = telegram_send_message(
         message
@@ -1656,7 +1765,7 @@ def process_article(article):
     if not sent:
 
         logger.error(
-            "NOT POSTED: %s",
+            "NOT POSTED TO TELEGRAM: %s",
             title
         )
 
@@ -2432,6 +2541,12 @@ def main():
     logger.info(
         "Polling: DISABLED"
     )
+
+    # -----------------------------------------------------
+    # TELEGRAM CONNECTION CHECK
+    # -----------------------------------------------------
+
+    telegram_check_bot()
 
     # -----------------------------------------------------
     # NEWS
