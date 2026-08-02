@@ -1,310 +1,179 @@
 import os
-import json
 import re
+import json
+import time
 import hashlib
+import logging
+import sqlite3
 import asyncio
-import aiohttp
+from datetime import datetime, timezone
+from urllib.parse import quote_plus
 
+import feedparser
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
+from groq import Groq
 
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
 )
 
-load_dotenv()
-
 # =========================================================
 # CONFIG
 # =========================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
+load_dotenv()
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 
-# MAIN CHANNEL - DON'T CHANGE
-MAIN_CHANNEL = "@yegnaLiverpool"
+# Current Groq model
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b"
+).strip()
 
-# TEST CHANNEL
-TEST_CHANNEL = "@yegnaLiverpoolET"
+# Check news every N minutes
+CHECK_INTERVAL_MINUTES = int(
+    os.getenv("CHECK_INTERVAL_MINUTES", "5")
+)
 
-# During testing, bot posts here.
-# After testing, change only this line to:
-# TARGET_CHANNEL = MAIN_CHANNEL
-TARGET_CHANNEL = TEST_CHANNEL
-
-# Telegram source channels
-SOURCE_CHANNELS = [
-    x.strip()
-    for x in os.getenv("SOURCE_CHANNELS", "").split(",")
-    if x.strip()
-]
-
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH")
-
-LIVERPOOL_TEAM_ID = 40
+# Only news from this many hours ago is considered new
+MAX_NEWS_AGE_HOURS = int(
+    os.getenv("MAX_NEWS_AGE_HOURS", "24")
+)
 
 # =========================================================
-# DATA
+# VALIDATION
 # =========================================================
 
-os.makedirs("data", exist_ok=True)
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is missing.")
 
-POSTED_FILE = "data/posted_news.json"
-SOURCE_STATE_FILE = "data/source_state.json"
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is missing.")
 
-posted_news = set()
-source_state = {}
-
-try:
-    if os.path.exists(POSTED_FILE):
-        with open(
-            POSTED_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-            posted_news = set(json.load(f))
-except Exception:
-    posted_news = set()
-
-try:
-    if os.path.exists(SOURCE_STATE_FILE):
-        with open(
-            SOURCE_STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-            source_state = json.load(f)
-except Exception:
-    source_state = {}
-
-
-def save_posted_news():
-
-    with open(
-        POSTED_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            list(posted_news)[-5000:],
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
-
-def save_source_state():
-
-    with open(
-        SOURCE_STATE_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            source_state,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
+if not CHANNEL_ID:
+    raise RuntimeError("CHANNEL_ID is missing.")
 
 # =========================================================
-# BOT STATE
+# LOGGING
 # =========================================================
 
-news_enabled = True
-live_enabled = True
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
+)
 
-last_live_state = {}
-
-
-# =========================================================
-# ADMIN
-# =========================================================
-
-def is_admin(update: Update):
-
-    if not update.effective_user:
-        return False
-
-    return update.effective_user.id == ADMIN_ID
-
+logger = logging.getLogger(__name__)
 
 # =========================================================
-# LIVERPOOL FILTER
+# GROQ
 # =========================================================
 
-LIVERPOOL_KEYWORDS = [
-
-    "liverpool",
-    "liverpool fc",
-    "lfc",
-    "anfield",
-    "merseyside",
-
-    "ሊቨርፑል",
-    "ሊቨርፑል ኤፍሲ",
-    "አንፊልድ",
-
-    "arne slot",
-    "slot",
-    "አርኔ ስሎት",
-
-    "andoni iraola",
-    "iraola",
-    "ኢራዎላ",
-
-    "mohamed salah",
-    "salah",
-    "ሳላህ",
-
-    "virgil van dijk",
-    "van dijk",
-    "ቫን ዳይክ",
-
-    "alisson",
-    "አሊሰን",
-
-    "trent",
-    "alexander-arnold",
-
-    "mac allister",
-    "ማክ አሊስተር",
-
-    "szoboszlai",
-    "ሶቦስላይ",
-
-    "luis diaz",
-    "diaz",
-    "ዲያዝ",
-
-    "darwin nunez",
-    "nunez",
-    "ኑኔዝ",
-
-    "gakpo",
-    "ጋክፖ",
-
-    "diogo jota",
-    "jota",
-    "ጆታ",
-
-    "florian wirtz",
-    "wirtz",
-
-    "frimpong",
-
-    "milos kerkez",
-    "kerkez",
-]
-
-
-def is_liverpool_news(text):
-
-    if not text:
-        return False
-
-    lower = text.lower()
-
-    for keyword in LIVERPOOL_KEYWORDS:
-
-        if keyword.lower() in lower:
-            return True
-
-    return False
-
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # =========================================================
-# CLEAN TEXT
+# DATABASE
 # =========================================================
 
-def clean_news_text(text):
+DB_FILE = "news.db"
 
+db = sqlite3.connect(
+    DB_FILE,
+    check_same_thread=False
+)
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS posted_news (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT UNIQUE,
+    title TEXT,
+    url TEXT,
+    source TEXT,
+    posted_at TEXT
+)
+""")
+
+db.commit()
+
+# =========================================================
+# TRUSTED SOURCES
+# =========================================================
+
+TRUSTED_SOURCES = {
+    "Liverpool FC Official": [
+        "liverpoolfc.com"
+    ],
+
+    # These are searched through Google News RSS.
+    # We still require the source/article to match the
+    # configured trusted identity before posting.
+    "David Ornstein": [
+        "theathletic.com"
+    ],
+
+    "Paul Joyce": [
+        "thetimes.com"
+    ],
+
+    "James Pearce": [
+        "theathletic.com"
+    ],
+
+    "Fabrizio Romano": [
+        "x.com",
+        "twitter.com",
+        "fabricioromano.com"
+    ],
+}
+
+# =========================================================
+# USER AGENT
+# =========================================================
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 10) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/150.0 Mobile Safari/537.36"
+    )
+}
+
+# =========================================================
+# BASIC HELPERS
+# =========================================================
+
+def clean_text(text):
     if not text:
         return ""
 
-    lines = []
+    text = BeautifulSoup(
+        text,
+        "html.parser"
+    ).get_text(" ", strip=True)
 
-    for line in text.splitlines():
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
-        line = line.strip()
-
-        if not line:
-            continue
-
-        lower = line.lower()
-
-        # Remove headers
-        if "liverpool news" in lower:
-            continue
-
-        if "🔴 liverpool news" in lower:
-            continue
-
-        # Remove source labels
-        if lower.startswith("source:"):
-            continue
-
-        if lower.startswith("ምንጭ:"):
-            continue
-
-        if lower.startswith("source -"):
-            continue
-
-        # Remove Telegram links
-        if "t.me/" in lower:
-            continue
-
-        if "telegram.me/" in lower:
-            continue
-
-        # Remove ALL @usernames
-        line = re.sub(
-            r"@\w+",
-            "",
-            line
-        ).strip()
-
-        # Remove common source/footer text
-        if lower in [
-            "follow us",
-            "join us",
-            "subscribe",
-            "follow",
-            "join",
-            "ይከተሉን",
-            "ተቀላቀሉ",
-        ]:
-            continue
-
-        if line:
-            lines.append(line)
-
-    return "\n".join(lines).strip()
+    return text.strip()
 
 
-# =========================================================
-# DUPLICATE HASH
-# =========================================================
-
-def make_hash(
-    channel,
-    post_id,
-    text
-):
-
+def make_fingerprint(title, url):
     raw = (
-        f"{channel}|"
-        f"{post_id}|"
-        f"{text}"
+        clean_text(title).lower()
+        + "|"
+        + clean_text(url).lower()
     )
 
     return hashlib.sha256(
@@ -312,656 +181,676 @@ def make_hash(
     ).hexdigest()
 
 
+def already_posted(fingerprint):
+    row = db.execute(
+        """
+        SELECT 1
+        FROM posted_news
+        WHERE fingerprint = ?
+        LIMIT 1
+        """,
+        (fingerprint,)
+    ).fetchone()
+
+    return row is not None
+
+
+def save_posted(
+    fingerprint,
+    title,
+    url,
+    source
+):
+    db.execute(
+        """
+        INSERT OR IGNORE INTO posted_news
+        (fingerprint, title, url, source, posted_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            fingerprint,
+            title,
+            url,
+            source,
+            datetime.now(timezone.utc).isoformat()
+        )
+    )
+
+    db.commit()
+
+
 # =========================================================
-# IMAGE DOWNLOAD
+# DATE HELPERS
 # =========================================================
 
-async def download_image(
+def parse_entry_time(entry):
+    try:
+        if hasattr(entry, "published_parsed") and entry.published_parsed:
+            return datetime.fromtimestamp(
+                time.mktime(entry.published_parsed),
+                tz=timezone.utc
+            )
+
+        if hasattr(entry, "updated_parsed") and entry.updated_parsed:
+            return datetime.fromtimestamp(
+                time.mktime(entry.updated_parsed),
+                tz=timezone.utc
+            )
+
+    except Exception:
+        pass
+
+    return None
+
+
+def is_recent(entry):
+    published = parse_entry_time(entry)
+
+    if not published:
+        return True
+
+    now = datetime.now(timezone.utc)
+
+    age = now - published
+
+    return age.total_seconds() <= (
+        MAX_NEWS_AGE_HOURS * 3600
+    )
+
+
+# =========================================================
+# GOOGLE NEWS RSS
+# =========================================================
+
+def google_news_rss(query):
+    encoded = quote_plus(query)
+
+    return (
+        "https://news.google.com/rss/search?"
+        f"q={encoded}"
+        "&hl=en-US"
+        "&gl=US"
+        "&ceid=US:en"
+    )
+
+
+def get_google_news(query):
+    try:
+        url = google_news_rss(query)
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20
+        )
+
+        response.raise_for_status()
+
+        return feedparser.parse(
+            response.content
+        )
+
+    except Exception as e:
+        logger.error(
+            "Google News error: %s",
+            e
+        )
+
+        return None
+
+
+# =========================================================
+# SOURCE COLLECTION
+# =========================================================
+
+def collect_news():
+    articles = []
+
+    # -----------------------------------------------------
+    # Liverpool Official
+    # -----------------------------------------------------
+
+    official_feed = get_google_news(
+        "site:liverpoolfc.com/news Liverpool"
+    )
+
+    if official_feed:
+        for entry in official_feed.entries[:10]:
+
+            title = clean_text(
+                getattr(entry, "title", "")
+            )
+
+            url = getattr(
+                entry,
+                "link",
+                ""
+            )
+
+            summary = clean_text(
+                getattr(entry, "summary", "")
+            )
+
+            if not title or not url:
+                continue
+
+            articles.append({
+                "title": title,
+                "url": url,
+                "summary": summary,
+                "source": "Liverpool FC Official",
+            })
+
+    # -----------------------------------------------------
+    # Trusted journalists
+    # -----------------------------------------------------
+
+    journalist_queries = [
+        (
+            "David Ornstein",
+            '"David Ornstein" Liverpool'
+        ),
+        (
+            "Paul Joyce",
+            '"Paul Joyce" Liverpool'
+        ),
+        (
+            "James Pearce",
+            '"James Pearce" Liverpool'
+        ),
+        (
+            "Fabrizio Romano",
+            '"Fabrizio Romano" Liverpool'
+        ),
+    ]
+
+    for source_name, query in journalist_queries:
+
+        feed = get_google_news(query)
+
+        if not feed:
+            continue
+
+        for entry in feed.entries[:10]:
+
+            title = clean_text(
+                getattr(entry, "title", "")
+            )
+
+            url = getattr(
+                entry,
+                "link",
+                ""
+            )
+
+            summary = clean_text(
+                getattr(entry, "summary", "")
+            )
+
+            source_field = clean_text(
+                getattr(entry, "source", "")
+            )
+
+            if not title or not url:
+                continue
+
+            articles.append({
+                "title": title,
+                "url": url,
+                "summary": summary,
+                "source": source_name,
+                "source_field": source_field
+            })
+
+    return articles
+
+
+# =========================================================
+# LIVERPOOL KEYWORD FILTER
+# =========================================================
+
+LIVERPOOL_KEYWORDS = [
+    "liverpool",
+    "reds",
+    "anfield",
+    "lfc",
+    "andoni iraola",
+    "liverpool fc",
+]
+
+
+def appears_liverpool_related(
+    title,
+    summary
+):
+    text = (
+        title
+        + " "
+        + summary
+    ).lower()
+
+    return any(
+        keyword in text
+        for keyword in LIVERPOOL_KEYWORDS
+    )
+
+
+# =========================================================
+# AI NEWS ASSISTANT
+# =========================================================
+
+SYSTEM_PROMPT = """
+You are the Liverpool FC News Assistant for an Amharic Telegram channel.
+
+Your job is NOT to invent news.
+
+You must follow these strict rules:
+
+1. Use ONLY information contained in the supplied source material.
+2. Never add facts from your own knowledge.
+3. Never invent quotes, transfer fees, dates, player opinions,
+   injuries, contract details or negotiations.
+4. If something is uncertain, preserve that uncertainty.
+5. Do not turn a rumour into a confirmed fact.
+6. Keep player names, manager names, club names and competition
+   names accurate.
+7. The final output must be natural, professional Amharic.
+8. Do not produce English paragraphs.
+9. Do not add an English headline.
+10. Do not use clickbait.
+11. Do not repeat the same information unnecessarily.
+12. If the supplied article is not clearly about Liverpool FC,
+    return REJECT.
+13. If the source is not one of the trusted sources supplied by
+    the application, return REJECT.
+
+Return JSON only.
+
+Format:
+
+{
+  "decision": "POST" or "REJECT",
+  "category": "news/transfer/rumour/injury/match/other",
+  "headline": "Amharic headline",
+  "body": "Amharic news body",
+  "confidence": 0-100
+}
+
+Important:
+- "POST" means the article is suitable for the Telegram channel.
+- "REJECT" means do not publish it.
+- For rumours, clearly indicate that it is a rumour/report.
+- Never claim a transfer is completed unless the source explicitly
+  says it is completed.
+"""
+
+
+def ai_analyze(article):
+
+    source = article.get(
+        "source",
+        ""
+    )
+
+    title = article.get(
+        "title",
+        ""
+    )
+
+    summary = article.get(
+        "summary",
+        ""
+    )
+
+    url = article.get(
+        "url",
+        ""
+    )
+
+    user_prompt = f"""
+TRUSTED SOURCE:
+{source}
+
+TITLE:
+{title}
+
+ARTICLE SUMMARY:
+{summary}
+
+URL:
+{url}
+
+Analyze this article according to your rules.
+Return JSON only.
+"""
+
+    try:
+        completion = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt
+                }
+            ],
+
+            temperature=0.1,
+
+            max_tokens=1000,
+
+            response_format={
+                "type": "json_object"
+            }
+        )
+
+        content = (
+            completion
+            .choices[0]
+            .message
+            .content
+        )
+
+        data = json.loads(content)
+
+        return data
+
+    except Exception as e:
+        logger.error(
+            "Groq error: %s",
+            e
+        )
+
+        return None
+
+
+# =========================================================
+# FORMAT TELEGRAM MESSAGE
+# =========================================================
+
+def build_telegram_message(
+    result,
+    source,
     url
 ):
 
-    if not url:
+    headline = clean_text(
+        result.get(
+            "headline",
+            ""
+        )
+    )
+
+    body = clean_text(
+        result.get(
+            "body",
+            ""
+        )
+    )
+
+    category = clean_text(
+        result.get(
+            "category",
+            "news"
+        )
+    ).lower()
+
+    if not headline or not body:
         return None
 
-    try:
-
-        async with aiohttp.ClientSession() as session:
-
-            async with session.get(
-                url,
-                timeout=20
-            ) as response:
-
-                if response.status != 200:
-                    return None
-
-                return await response.read()
-
-    except Exception as e:
-
-        print(
-            "❌ Image download error:",
-            e
-        )
-
-        return None
-
-
-# =========================================================
-# PUBLISH NEWS
-# =========================================================
-
-async def publish_news(
-    text,
-    image_url,
-    channel,
-    post_id,
-    bot
-):
-
-    if not news_enabled:
-        return
-
-    if not text and not image_url:
-        return
-
-    # Liverpool filter
-    if not is_liverpool_news(text):
-
-        print(
-            "⛔ Not Liverpool news - skipped"
-        )
-
-        return
-
-    # Clean source username / links
-    clean_text = clean_news_text(text)
-
-    if not clean_text and not image_url:
-        return
-
-    # Duplicate check
-    news_id = make_hash(
-        channel,
-        post_id,
-        text
-    )
-
-    if news_id in posted_news:
-
-        print(
-            "⏭️ Duplicate - skipped"
-        )
-
-        return
-
-    # Final footer
-    if clean_text:
-
-        final_text = (
-            f"{clean_text}\n\n"
-            f"@yegnaLiverpool"
-        )
-
-    else:
-
-        final_text = "@yegnaLiverpool"
-
-    try:
-
-        # =================================================
-        # IMAGE
-        # =================================================
-
-        if image_url:
-
-            image = await download_image(
-                image_url
-            )
-
-            if image:
-
-                # Telegram caption max 1024
-                if len(final_text) <= 1024:
-
-                    await bot.send_photo(
-                        chat_id=TARGET_CHANNEL,
-                        photo=image,
-                        caption=final_text
-                    )
-
-                else:
-
-                    await bot.send_photo(
-                        chat_id=TARGET_CHANNEL,
-                        photo=image,
-                        caption=final_text[:1024]
-                    )
-
-                    await bot.send_message(
-                        chat_id=TARGET_CHANNEL,
-                        text=final_text[1024:]
-                    )
-
-            else:
-
-                await bot.send_message(
-                    chat_id=TARGET_CHANNEL,
-                    text=final_text
-                )
-
-        # =================================================
-        # TEXT ONLY
-        # =================================================
-
-        else:
-
-            await bot.send_message(
-                chat_id=TARGET_CHANNEL,
-                text=final_text
-            )
-
-        posted_news.add(
-            news_id
-        )
-
-        save_posted_news()
-
-        print(
-            f"✅ NEWS POSTED: "
-            f"{channel}/{post_id}"
-        )
-
-    except Exception as e:
-
-        print(
-            "❌ Telegram posting error:",
-            e
-        )
-
-
-# =========================================================
-# TELEGRAM SOURCE MONITOR
-# =========================================================
-
-telegram_client = None
-
-
-async def start_source_monitor(
-    application
-):
-
-    global telegram_client
-
-    if not API_ID or not API_HASH:
-
-        print(
-            "⚠️ API_ID/API_HASH missing."
-        )
-
-        return
-
-    if not SOURCE_CHANNELS:
-
-        print(
-            "⚠️ SOURCE_CHANNELS is empty."
-        )
-
-        return
-
-    telegram_client = TelegramClient(
-        "liverpool_source_session",
-        API_ID,
-        API_HASH
-    )
-
-    await telegram_client.start()
-
-    print(
-        "✅ Source monitor started."
-    )
-
-    @telegram_client.on(
-        events.NewMessage(
-            chats=SOURCE_CHANNELS
-        )
-    )
-    async def source_message(event):
-
-        try:
-
-            text = event.raw_text or ""
-
-            # =================================================
-            # IMPORTANT:
-            # ONLY NEW MESSAGE
-            # =================================================
-
-            channel_name = ""
-
-            try:
-
-                chat = await event.get_chat()
-
-                channel_name = (
-                    getattr(
-                        chat,
-                        "username",
-                        None
-                    )
-                    or str(
-                        getattr(
-                            chat,
-                            "id",
-                            ""
-                        )
-                    )
-                )
-
-            except Exception:
-
-                channel_name = "unknown"
-
-            post_id = str(
-                event.id
-            )
-
-            # Already handled?
-            source_key = (
-                f"{channel_name}:{post_id}"
-            )
-
-            if source_key in source_state:
-
-                return
-
-            # Mark as seen immediately
-            source_state[
-                source_key
-            ] = True
-
-            save_source_state()
-
-            # =================================================
-            # IMAGE
-            # =================================================
-
-            image_url = None
-
-            if event.message.photo:
-
-                try:
-
-                    downloaded = (
-                        await event.download_media(
-                            file=bytes
-                        )
-                    )
-
-                    # Telethon returns bytes
-                    if downloaded:
-
-                        import base64
-
-                        image_url = (
-                            "data:image/jpeg;base64,"
-                            + base64.b64encode(
-                                downloaded
-                            ).decode()
-                        )
-
-                except Exception as e:
-
-                    print(
-                        "Image extraction error:",
-                        e
-                    )
-
-            print(
-                "📰 New source post:",
-                channel_name,
-                post_id
-            )
-
-            # -------------------------------------------------
-            # If image is available as bytes, publish separately
-            # -------------------------------------------------
-
-            if image_url and image_url.startswith(
-                "data:"
-            ):
-
-                # We handle this directly
-                if is_liverpool_news(text):
-
-                    clean_text = clean_news_text(
-                        text
-                    )
-
-                    if clean_text:
-
-                        final_text = (
-                            f"{clean_text}\n\n"
-                            "@yegnaLiverpool"
-                        )
-
-                    else:
-
-                        final_text = (
-                            "@yegnaLiverpool"
-                        )
-
-                    news_id = make_hash(
-                        channel_name,
-                        post_id,
-                        text
-                    )
-
-                    if news_id not in posted_news:
-
-                        try:
-
-                            import base64
-
-                            image_bytes = base64.b64decode(
-                                image_url.split(
-                                    ",",
-                                    1
-                                )[1]
-                            )
-
-                            await application.bot.send_photo(
-                                chat_id=TARGET_CHANNEL,
-                                photo=image_bytes,
-                                caption=final_text[:1024]
-                            )
-
-                            if len(final_text) > 1024:
-
-                                await application.bot.send_message(
-                                    chat_id=TARGET_CHANNEL,
-                                    text=final_text[1024:]
-                                )
-
-                            posted_news.add(
-                                news_id
-                            )
-
-                            save_posted_news()
-
-                            print(
-                                "✅ Image + news posted"
-                            )
-
-                        except Exception as e:
-
-                            print(
-                                "❌ Image posting error:",
-                                e
-                            )
-
-                else:
-
-                    print(
-                        "⛔ Non-Liverpool post skipped."
-                    )
-
-                return
-
-            # Normal text-only post
-            await publish_news(
-                text,
-                None,
-                channel_name,
-                post_id,
-                application.bot
-            )
-
-        except Exception as e:
-
-            print(
-                "❌ Source message error:",
-                e
-            )
-
-    await telegram_client.run_until_disconnected()
-
-
-# =========================================================
-# FOOTBALL API
-# =========================================================
-
-async def football_request(
-    endpoint
-):
-
-    if not FOOTBALL_API_KEY:
-
-        print(
-            "⚠️ FOOTBALL_API_KEY missing."
-        )
-
-        return None
-
-    url = (
-        "https://v3.football.api-sports.io/"
-        + endpoint
-    )
-
-    headers = {
-        "x-apisports-key":
-        FOOTBALL_API_KEY
+    category_map = {
+        "transfer": "🔄 ዝውውር",
+        "rumour": "🟡 ወሬ / ዘገባ",
+        "injury": "🏥 የጤና ሁኔታ",
+        "match": "⚽ ጨዋታ",
+        "news": "📰 ዜና",
+        "other": "📰 ዜና",
     }
 
+    label = category_map.get(
+        category,
+        "📰 ዜና"
+    )
+
+    message = (
+        f"🔴 <b>LIVERPOOL NEWS</b>\n\n"
+        f"<b>{headline}</b>\n\n"
+        f"{body}\n\n"
+        f"{label}\n"
+        f"📰 ምንጭ: {source}\n"
+        f"🔗 <a href=\"{url}\">የመጀመሪያ ምንጭ</a>"
+    )
+
+    return message
+
+
+# =========================================================
+# PROCESS ONE ARTICLE
+# =========================================================
+
+async def process_article(
+    bot,
+    article
+):
+
+    title = article.get(
+        "title",
+        ""
+    )
+
+    url = article.get(
+        "url",
+        ""
+    )
+
+    source = article.get(
+        "source",
+        ""
+    )
+
+    summary = article.get(
+        "summary",
+        ""
+    )
+
+    if not title or not url:
+        return False
+
+    # -----------------------------------------------------
+    # Liverpool filter
+    # -----------------------------------------------------
+
+    if not appears_liverpool_related(
+        title,
+        summary
+    ):
+        logger.info(
+            "Rejected: not Liverpool related: %s",
+            title
+        )
+
+        return False
+
+    # -----------------------------------------------------
+    # Duplicate check
+    # -----------------------------------------------------
+
+    fingerprint = make_fingerprint(
+        title,
+        url
+    )
+
+    if already_posted(
+        fingerprint
+    ):
+        logger.info(
+            "Duplicate skipped: %s",
+            title
+        )
+
+        return False
+
+    # -----------------------------------------------------
+    # AI
+    # -----------------------------------------------------
+
+    logger.info(
+        "AI checking: %s",
+        title
+    )
+
+    result = await asyncio.to_thread(
+        ai_analyze,
+        article
+    )
+
+    if not result:
+        logger.warning(
+            "AI failed: %s",
+            title
+        )
+
+        return False
+
+    decision = str(
+        result.get(
+            "decision",
+            "REJECT"
+        )
+    ).upper()
+
+    confidence = int(
+        result.get(
+            "confidence",
+            0
+        ) or 0
+    )
+
+    if decision != "POST":
+        logger.info(
+            "AI rejected: %s",
+            title
+        )
+
+        return False
+
+    # Require reasonable confidence
+    if confidence < 75:
+        logger.info(
+            "Low confidence (%s): %s",
+            confidence,
+            title
+        )
+
+        return False
+
+    # -----------------------------------------------------
+    # Build message
+    # -----------------------------------------------------
+
+    message = build_telegram_message(
+        result,
+        source,
+        url
+    )
+
+    if not message:
+        return False
+
+    # -----------------------------------------------------
+    # Telegram
+    # -----------------------------------------------------
+
     try:
 
-        async with aiohttp.ClientSession() as session:
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=message,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=False
+        )
 
-            async with session.get(
-                url,
-                headers=headers,
-                timeout=20
-            ) as response:
+        save_posted(
+            fingerprint,
+            title,
+            url,
+            source
+        )
 
-                if response.status != 200:
+        logger.info(
+            "POSTED: %s",
+            title
+        )
 
-                    print(
-                        "Football API error:",
-                        response.status
-                    )
-
-                    return None
-
-                return await response.json()
+        return True
 
     except Exception as e:
 
-        print(
-            "Football API request error:",
+        logger.error(
+            "Telegram error: %s",
             e
         )
 
-        return None
+        return False
 
 
 # =========================================================
-# LIVE MATCH
+# NEWS CHECK
 # =========================================================
 
-async def check_liverpool_live(
-    application
-):
-
-    if not live_enabled:
-        return
-
-    data = await football_request(
-        f"fixtures?team={LIVERPOOL_TEAM_ID}&live=all"
-    )
-
-    if not data:
-        return
-
-    fixtures = data.get(
-        "response",
-        []
-    )
-
-    if not fixtures:
-        return
-
-    for fixture in fixtures:
-
-        fixture_info = fixture.get(
-            "fixture",
-            {}
-        )
-
-        teams = fixture.get(
-            "teams",
-            {}
-        )
-
-        goals = fixture.get(
-            "goals",
-            {}
-        )
-
-        status = fixture_info.get(
-            "status",
-            {}
-        )
-
-        fixture_id = fixture_info.get(
-            "id"
-        )
-
-        if not fixture_id:
-            continue
-
-        home = teams.get(
-            "home",
-            {}
-        )
-
-        away = teams.get(
-            "away",
-            {}
-        )
-
-        home_name = home.get(
-            "name",
-            "Home"
-        )
-
-        away_name = away.get(
-            "name",
-            "Away"
-        )
-
-        home_score = goals.get(
-            "home"
-        )
-
-        away_score = goals.get(
-            "away"
-        )
-
-        minute = status.get(
-            "elapsed"
-        )
-
-        match_status = status.get(
-            "short"
-        )
-
-        current_state = {
-            "home_score": home_score,
-            "away_score": away_score,
-            "minute": minute,
-            "status": match_status
-        }
-
-        previous_state = last_live_state.get(
-            fixture_id
-        )
-
-        if previous_state == current_state:
-            continue
-
-        last_live_state[
-            fixture_id
-        ] = current_state
-
-        message = (
-            f"⚽ {home_name} "
-            f"{home_score or 0} - "
-            f"{away_score or 0} "
-            f"{away_name}\n\n"
-        )
-
-        if minute:
-
-            message += (
-                f"⏱️ {minute}'\n\n"
-            )
-
-        if match_status == "HT":
-
-            message += (
-                "⏸️ የመጀመሪያው አጋማሽ "
-                "ተጠናቋል"
-            )
-
-        elif match_status in (
-            "FT",
-            "AET",
-            "PEN"
-        ):
-
-            message += (
-                "🏁 ጨዋታው ተጠናቋል"
-            )
-
-        else:
-
-            message += (
-                "🔴 ጨዋታው ቀጥሏል"
-            )
-
-        message += (
-            "\n\n@yegnaLiverpool"
-        )
-
-        try:
-
-            await application.bot.send_message(
-                chat_id=TARGET_CHANNEL,
-                text=message
-            )
-
-            print(
-                "⚽ LIVE update posted"
-            )
-
-        except Exception as e:
-
-            print(
-                "❌ LIVE posting error:",
-                e
-            )
-
-
-# =========================================================
-# LIVE JOB
-# =========================================================
-
-async def live_job(
+async def check_news(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    await check_liverpool_live(
-        context.application
+    logger.info(
+        "Checking trusted sources..."
+    )
+
+    articles = await asyncio.to_thread(
+        collect_news
+    )
+
+    if not articles:
+        logger.info(
+            "No articles found."
+        )
+
+        return
+
+    # Process newest first
+    articles = articles[:30]
+
+    posted_count = 0
+
+    for article in articles:
+
+        try:
+
+            posted = await process_article(
+                context.bot,
+                article
+            )
+
+            if posted:
+                posted_count += 1
+
+            # Small delay to reduce API pressure
+            await asyncio.sleep(2)
+
+        except Exception as e:
+
+            logger.exception(
+                "Article processing error: %s",
+                e
+            )
+
+    logger.info(
+        "News check finished. Posted: %s",
+        posted_count
     )
 
 
@@ -975,26 +864,13 @@ async def start(
 ):
 
     await update.message.reply_text(
-        "🔴 Liverpool Bot በስራ ላይ ነው።"
-    )
-
-
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not is_admin(update):
-        return
-
-    await update.message.reply_text(
-        "👑 ADMIN COMMANDS\n\n"
-        "/status\n"
-        "/on\n"
-        "/off\n"
-        "/liveon\n"
-        "/liveoff\n"
-        "/sources"
+        "🔴 Liverpool News Assistant Bot እየሰራ ነው።\n\n"
+        "📰 Trusted sources\n"
+        "🔎 News filtering\n"
+        "🤖 AI verification\n"
+        "🇪🇹 Amharic translation\n"
+        "🔁 Duplicate protection\n"
+        "📤 Telegram publishing"
     )
 
 
@@ -1003,95 +879,19 @@ async def status(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not is_admin(update):
-        return
+    row = db.execute(
+        "SELECT COUNT(*) FROM posted_news"
+    ).fetchone()
 
-    news_status = (
-        "🟢 ON"
-        if news_enabled
-        else "🔴 OFF"
-    )
-
-    live_status = (
-        "🟢 ON"
-        if live_enabled
-        else "🔴 OFF"
-    )
+    total = row[0] if row else 0
 
     await update.message.reply_text(
-        f"📰 News: {news_status}\n"
-        f"⚽ Live: {live_status}\n"
-        f"🧪 Test: {TEST_CHANNEL}\n"
-        f"🔴 Main: {MAIN_CHANNEL}\n"
-        f"📢 Current: {TARGET_CHANNEL}"
-    )
-
-
-async def news_on(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    global news_enabled
-
-    if not is_admin(update):
-        return
-
-    news_enabled = True
-
-    await update.message.reply_text(
-        "🟢 News ON"
-    )
-
-
-async def news_off(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    global news_enabled
-
-    if not is_admin(update):
-        return
-
-    news_enabled = False
-
-    await update.message.reply_text(
-        "🔴 News OFF"
-    )
-
-
-async def live_on(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    global live_enabled
-
-    if not is_admin(update):
-        return
-
-    live_enabled = True
-
-    await update.message.reply_text(
-        "⚽ LIVE ON"
-    )
-
-
-async def live_off(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    global live_enabled
-
-    if not is_admin(update):
-        return
-
-    live_enabled = False
-
-    await update.message.reply_text(
-        "⛔ LIVE OFF"
+        "🟢 Bot Status: RUNNING\n\n"
+        f"📰 Posted news stored: {total}\n"
+        f"⏱️ Check interval: "
+        f"{CHECK_INTERVAL_MINUTES} minutes\n"
+        f"🤖 AI: Groq\n"
+        f"📡 Channel: {CHANNEL_ID}"
     )
 
 
@@ -1100,44 +900,90 @@ async def sources(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not is_admin(update):
-        return
-
-    if not SOURCE_CHANNELS:
-
-        await update.message.reply_text(
-            "⚠️ SOURCE_CHANNELS ባዶ ነው።"
-        )
-
-        return
-
-    source_list = "\n".join(
-        f"• {channel}"
-        for channel in SOURCE_CHANNELS
+    names = "\n".join(
+        f"• {name}"
+        for name in TRUSTED_SOURCES.keys()
     )
 
     await update.message.reply_text(
-        "📰 Sources:\n\n"
-        + source_list
+        "🛡️ Trusted Sources:\n\n"
+        + names
     )
 
 
-# =========================================================
-# STARTUP
-# =========================================================
-
-async def post_init(
-    application
+async def test_ai(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
-    print(
-        "🔴 Liverpool Bot started!"
+    test_article = {
+        "title": (
+            "Liverpool are preparing for the new season "
+            "under Andoni Iraola"
+        ),
+        "summary": (
+            "Liverpool are continuing preparations "
+            "ahead of the new campaign."
+        ),
+        "url": "https://www.liverpoolfc.com/news",
+        "source": "Liverpool FC Official",
+    }
+
+    result = await asyncio.to_thread(
+        ai_analyze,
+        test_article
     )
 
-    asyncio.create_task(
-        start_source_monitor(
-            application
+    if not result:
+
+        await update.message.reply_text(
+            "❌ AI test failed."
         )
+
+        return
+
+    text = json.dumps(
+        result,
+        ensure_ascii=False,
+        indent=2
+    )
+
+    await update.message.reply_text(
+        "🤖 AI Test Result:\n\n"
+        + text
+    )
+
+
+async def check_now(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "🔎 Trusted sources እየተፈተሹ ነው..."
+    )
+
+    await check_news(
+        context
+    )
+
+    await update.message.reply_text(
+        "✅ News check finished."
+    )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update,
+    context
+):
+
+    logger.exception(
+        "Unhandled error:",
+        exc_info=context.error
     )
 
 
@@ -1147,36 +993,22 @@ async def post_init(
 
 def main():
 
-    if not BOT_TOKEN:
-
-        raise ValueError(
-            "BOT_TOKEN አልተገኘም።"
-        )
-
-    if not ADMIN_ID:
-
-        raise ValueError(
-            "ADMIN_ID አልተገኘም።"
-        )
+    logger.info(
+        "Starting Liverpool News Assistant..."
+    )
 
     application = (
-        Application.builder()
+        Application
+        .builder()
         .token(BOT_TOKEN)
-        .post_init(post_init)
         .build()
     )
 
+    # Commands
     application.add_handler(
         CommandHandler(
             "start",
             start
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "help",
-            help_command
         )
     )
 
@@ -1189,51 +1021,52 @@ def main():
 
     application.add_handler(
         CommandHandler(
-            "on",
-            news_on
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "off",
-            news_off
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "liveon",
-            live_on
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "liveoff",
-            live_off
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
             "sources",
             sources
         )
     )
 
-    # LIVE check every 5 minutes
+    application.add_handler(
+        CommandHandler(
+            "testai",
+            test_ai
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "check",
+            check_now
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    # -----------------------------------------------------
+    # Automatic news checker
+    # -----------------------------------------------------
+
+    if application.job_queue is None:
+        raise RuntimeError(
+            "JobQueue is not available. "
+            "Install python-telegram-bot[job-queue]."
+        )
+
     application.job_queue.run_repeating(
-        live_job,
-        interval=300,
+        check_news,
+        interval=CHECK_INTERVAL_MINUTES * 60,
         first=10
     )
 
-    print(
-        "🚀 Liverpool Bot running..."
+    logger.info(
+        "Bot started successfully."
     )
 
-    application.run_polling()
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
 
 
 if __name__ == "__main__":
