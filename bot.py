@@ -1,39 +1,3 @@
-import os
-import re
-import json
-import time
-import hashlib
-import logging
-import sqlite3
-from datetime import datetime, timezone
-from urllib.parse import quote_plus
-
-import feedparser
-import requests
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
-from groq import Groq
-
-
-# =========================================================
-# CONFIG
-# =========================================================
-
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@yegnaLiverpool").strip()
-
-GROQ_MODEL = os.getenv(
-    "GROQ_MODEL",
-    "openai/gpt-oss-120b"
-).strip()
-
-MAX_NEWS_AGE_HOURS = int(
-    os.getenv("MAX_NEWS_AGE_HOURS", "24")
-)
-
 
 # =========================================================
 # VALIDATION
