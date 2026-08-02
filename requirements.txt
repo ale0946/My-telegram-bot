@@ -1,4 +1,6 @@
-python-telegram-bot[job-queue]==22.5
-telethon==1.42.0
-python-dotenv==1.1.1
-aiohttp==3.12.15
+python-telegram-bot[job-queue]
+groq
+feedparser
+requests
+python-dotenv
+beautifulsoup4
