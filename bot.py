@@ -6,7 +6,7 @@ import hashlib
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import feedparser
 import requests
@@ -22,11 +22,7 @@ from groq import Groq
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
-GROQ_API_KEY = os.getenv(
-    "GROQ_API_KEY",
-    ""
-).strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
 CHANNEL_ID = os.getenv(
     "CHANNEL_ID",
@@ -39,21 +35,14 @@ GROQ_MODEL = os.getenv(
 ).strip()
 
 MAX_NEWS_AGE_HOURS = int(
-    os.getenv(
-        "MAX_NEWS_AGE_HOURS",
-        "24"
-    )
+    os.getenv("MAX_NEWS_AGE_HOURS", "24")
 )
 
 CHECK_INTERVAL_MINUTES = int(
-    os.getenv(
-        "CHECK_INTERVAL_MINUTES",
-        "5"
-    )
+    os.getenv("CHECK_INTERVAL_MINUTES", "5")
 )
 
 LIVERPOOL_TEAM_ID = "364"
-
 DB_FILE = "news.db"
 
 
@@ -62,19 +51,13 @@ DB_FILE = "news.db"
 # =========================================================
 
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN is missing."
-    )
+    raise RuntimeError("BOT_TOKEN is missing.")
 
 if not GROQ_API_KEY:
-    raise RuntimeError(
-        "GROQ_API_KEY is missing."
-    )
+    raise RuntimeError("GROQ_API_KEY is missing.")
 
 if not CHANNEL_ID:
-    raise RuntimeError(
-        "CHANNEL_ID is missing."
-    )
+    raise RuntimeError("CHANNEL_ID is missing.")
 
 
 # =========================================================
@@ -181,29 +164,20 @@ HEADERS = {
 # =========================================================
 
 def clean_text(text):
-
     if not text:
         return ""
 
     text = BeautifulSoup(
         str(text),
         "html.parser"
-    ).get_text(
-        " ",
-        strip=True
-    )
+    ).get_text(" ", strip=True)
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
 def escape_html(text):
-
     if not text:
         return ""
 
@@ -215,21 +189,90 @@ def escape_html(text):
     )
 
 
-def make_fingerprint(title, url):
+def normalize_text(text):
+    text = clean_text(text).lower()
 
-    raw = (
-        clean_text(title).lower()
-        + "|"
-        + clean_text(url).lower()
+    text = re.sub(
+        r"https?://\S+",
+        "",
+        text
     )
+
+    text = re.sub(
+        r"[^a-z0-9\u1200-\u137f\s]",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
+
+
+def make_fingerprint(title, url=""):
+    """
+    URL ብቻ ላይ አንመሰረትም።
+    ተመሳሳይ ዜና ከሌላ source URL ቢመጣም
+    title fingerprint በመጠቀም እንዳይደገም ይረዳል።
+    """
+
+    normalized_title = normalize_text(title)
+
+    raw = normalized_title
+
+    if not raw:
+        raw = normalize_text(url)
 
     return hashlib.sha256(
         raw.encode("utf-8")
     ).hexdigest()
 
 
-def already_posted(fingerprint):
+def title_tokens(title):
+    words = normalize_text(title).split()
 
+    stop_words = {
+        "the", "a", "an", "and", "or",
+        "of", "to", "in", "on", "for",
+        "with", "is", "are", "at", "from",
+        "liverpool", "fc"
+    }
+
+    return {
+        word
+        for word in words
+        if len(word) >= 3
+        and word not in stop_words
+    }
+
+
+def titles_are_similar(title1, title2):
+    a = title_tokens(title1)
+    b = title_tokens(title2)
+
+    if not a or not b:
+        return False
+
+    intersection = len(a & b)
+    smaller = min(len(a), len(b))
+
+    if smaller == 0:
+        return False
+
+    return (
+        intersection / smaller
+    ) >= 0.72
+
+
+# =========================================================
+# DATABASE NEWS CHECKS
+# =========================================================
+
+def already_posted(fingerprint):
     row = db.execute(
         """
         SELECT 1
@@ -243,13 +286,34 @@ def already_posted(fingerprint):
     return row is not None
 
 
+def similar_news_already_posted(title):
+    rows = db.execute(
+        """
+        SELECT title
+        FROM posted_news
+        ORDER BY id DESC
+        LIMIT 150
+        """
+    ).fetchall()
+
+    for row in rows:
+        old_title = row[0]
+
+        if titles_are_similar(
+            title,
+            old_title
+        ):
+            return True
+
+    return False
+
+
 def save_posted(
     fingerprint,
     title,
     url,
     source
 ):
-
     db.execute(
         """
         INSERT OR IGNORE INTO posted_news
@@ -271,11 +335,10 @@ def save_posted(
 
 
 # =========================================================
-# LIVE EVENT DATABASE
+# LIVE DATABASE
 # =========================================================
 
 def live_event_already_posted(event_key):
-
     row = db.execute(
         """
         SELECT 1
@@ -294,7 +357,6 @@ def save_live_event(
     event_type,
     event_text
 ):
-
     db.execute(
         """
         INSERT OR IGNORE INTO live_events
@@ -315,21 +377,19 @@ def save_live_event(
 
 
 # =========================================================
-# DATE HELPERS
+# DATE
 # =========================================================
 
 def parse_entry_time(entry):
 
     try:
-
         if (
-            hasattr(
+            getattr(
                 entry,
-                "published_parsed"
+                "published_parsed",
+                None
             )
-            and entry.published_parsed
         ):
-
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.published_parsed
@@ -338,13 +398,12 @@ def parse_entry_time(entry):
             )
 
         if (
-            hasattr(
+            getattr(
                 entry,
-                "updated_parsed"
+                "updated_parsed",
+                None
             )
-            and entry.updated_parsed
         ):
-
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.updated_parsed
@@ -353,7 +412,6 @@ def parse_entry_time(entry):
             )
 
     except Exception as e:
-
         logger.warning(
             "Date parsing error: %s",
             e
@@ -364,9 +422,7 @@ def parse_entry_time(entry):
 
 def is_recent(entry):
 
-    published = parse_entry_time(
-        entry
-    )
+    published = parse_entry_time(entry)
 
     if not published:
         return True
@@ -379,20 +435,18 @@ def is_recent(entry):
         now - published
     ).total_seconds()
 
-    return age <= (
+    return age >= 0 and age <= (
         MAX_NEWS_AGE_HOURS * 3600
     )
 
 
 # =========================================================
-# GOOGLE NEWS RSS
+# GOOGLE NEWS
 # =========================================================
 
 def google_news_rss(query):
 
-    encoded = quote_plus(
-        query
-    )
+    encoded = quote_plus(query)
 
     return (
         "https://news.google.com/rss/search?"
@@ -406,13 +460,8 @@ def google_news_rss(query):
 def get_google_news(query):
 
     try:
-
-        url = google_news_rss(
-            query
-        )
-
         response = requests.get(
-            url,
+            google_news_rss(query),
             headers=HEADERS,
             timeout=20
         )
@@ -434,7 +483,7 @@ def get_google_news(query):
 
 
 # =========================================================
-# URL RESOLVER
+# URL
 # =========================================================
 
 def resolve_article_url(url):
@@ -443,7 +492,6 @@ def resolve_article_url(url):
         return ""
 
     try:
-
         response = requests.get(
             url,
             headers=HEADERS,
@@ -451,29 +499,61 @@ def resolve_article_url(url):
             allow_redirects=True
         )
 
-        final_url = response.url
+        return response.url or url
 
-        if final_url:
+    except Exception:
+        return url
 
-            logger.info(
-                "Resolved URL: %s",
-                final_url
-            )
 
-            return final_url
+def get_domain(url):
 
-    except Exception as e:
-
-        logger.warning(
-            "URL resolve failed: %s",
-            e
+    try:
+        return urlparse(
+            url
+        ).netloc.lower().replace(
+            "www.",
+            ""
         )
 
-    return url
+    except Exception:
+        return ""
 
 
 # =========================================================
-# IMAGE HELPERS
+# SOURCE VALIDATION
+# =========================================================
+
+def source_domain_allowed(
+    source_name,
+    url
+):
+
+    domain = get_domain(
+        resolve_article_url(url)
+    )
+
+    allowed = TRUSTED_SOURCES.get(
+        source_name,
+        []
+    )
+
+    for item in allowed:
+
+        item = item.lower()
+
+        if (
+            domain == item
+            or domain.endswith(
+                "." + item
+            )
+        ):
+            return True
+
+    return False
+
+
+# =========================================================
+# IMAGE
 # =========================================================
 
 def is_valid_image_url(url):
@@ -483,125 +563,71 @@ def is_valid_image_url(url):
 
     url = str(url).strip()
 
-    if not url.startswith(
+    return url.startswith(
         ("http://", "https://")
-    ):
-        return False
-
-    return True
+    )
 
 
 def get_feed_image(entry):
 
-    # -----------------------------------------------------
-    # media_content
-    # -----------------------------------------------------
-
     try:
-
-        media_content = getattr(
+        for media in getattr(
             entry,
             "media_content",
             []
-        )
+        ):
 
-        for media in media_content:
-
-            image_url = media.get(
+            url = media.get(
                 "url",
                 ""
             )
 
-            if is_valid_image_url(
-                image_url
-            ):
-
-                logger.info(
-                    "Image found in media_content"
-                )
-
-                return image_url
+            if is_valid_image_url(url):
+                return url
 
     except Exception:
         pass
 
-    # -----------------------------------------------------
-    # media_thumbnail
-    # -----------------------------------------------------
-
     try:
-
-        media_thumbnail = getattr(
+        for media in getattr(
             entry,
             "media_thumbnail",
             []
-        )
+        ):
 
-        for media in media_thumbnail:
-
-            image_url = media.get(
+            url = media.get(
                 "url",
                 ""
             )
 
-            if is_valid_image_url(
-                image_url
-            ):
-
-                logger.info(
-                    "Image found in media_thumbnail"
-                )
-
-                return image_url
+            if is_valid_image_url(url):
+                return url
 
     except Exception:
         pass
 
-    # -----------------------------------------------------
-    # enclosures
-    # -----------------------------------------------------
-
     try:
-
-        enclosures = getattr(
+        for enclosure in getattr(
             entry,
             "enclosures",
             []
-        )
+        ):
 
-        for enclosure in enclosures:
-
-            image_url = enclosure.get(
+            url = enclosure.get(
                 "href",
+                ""
+            ) or enclosure.get(
+                "url",
                 ""
             )
 
-            if not image_url:
-
-                image_url = enclosure.get(
-                    "url",
-                    ""
-                )
-
-            if is_valid_image_url(
-                image_url
-            ):
-
-                logger.info(
-                    "Image found in enclosure"
-                )
-
-                return image_url
+            if is_valid_image_url(url):
+                return url
 
     except Exception:
         pass
 
-    # -----------------------------------------------------
-    # summary image
-    # -----------------------------------------------------
-
     try:
-
         summary = getattr(
             entry,
             "summary",
@@ -613,33 +639,17 @@ def get_feed_image(entry):
             "html.parser"
         )
 
-        image = soup.find(
-            "img"
-        )
+        image = soup.find("img")
 
         if image:
 
-            image_url = image.get(
-                "src",
-                ""
+            url = (
+                image.get("src", "")
+                or image.get("data-src", "")
             )
 
-            if not image_url:
-
-                image_url = image.get(
-                    "data-src",
-                    ""
-                )
-
-            if is_valid_image_url(
-                image_url
-            ):
-
-                logger.info(
-                    "Image found in RSS HTML"
-                )
-
-                return image_url
+            if is_valid_image_url(url):
+                return url
 
     except Exception:
         pass
@@ -661,8 +671,7 @@ def get_page_image(url):
         response = requests.get(
             actual_url,
             headers=HEADERS,
-            timeout=20,
-            allow_redirects=True
+            timeout=20
         )
 
         response.raise_for_status()
@@ -672,123 +681,71 @@ def get_page_image(url):
             "html.parser"
         )
 
-        # -------------------------------------------------
-        # og:image
-        # -------------------------------------------------
+        selectors = [
+            (
+                "meta",
+                {
+                    "property": "og:image"
+                }
+            ),
+            (
+                "meta",
+                {
+                    "name": "twitter:image"
+                }
+            ),
+            (
+                "meta",
+                {
+                    "name": "twitter:image:src"
+                }
+            )
+        ]
 
-        og_image = soup.find(
-            "meta",
-            property="og:image"
-        )
+        for tag, attrs in selectors:
 
-        if og_image:
-
-            image_url = og_image.get(
-                "content",
-                ""
+            image = soup.find(
+                tag,
+                attrs=attrs
             )
 
-            if image_url:
+            if image:
 
-                logger.info(
-                    "Image found from og:image"
+                image_url = image.get(
+                    "content",
+                    ""
                 )
 
-                return image_url
-
-        # -------------------------------------------------
-        # twitter:image
-        # -------------------------------------------------
-
-        twitter_image = soup.find(
-            "meta",
-            attrs={
-                "name": "twitter:image"
-            }
-        )
-
-        if twitter_image:
-
-            image_url = twitter_image.get(
-                "content",
-                ""
-            )
-
-            if image_url:
-
-                logger.info(
-                    "Image found from twitter:image"
-                )
-
-                return image_url
-
-        # -------------------------------------------------
-        # twitter:image:src
-        # -------------------------------------------------
-
-        twitter_image = soup.find(
-            "meta",
-            attrs={
-                "name": "twitter:image:src"
-            }
-        )
-
-        if twitter_image:
-
-            image_url = twitter_image.get(
-                "content",
-                ""
-            )
-
-            if image_url:
-
-                logger.info(
-                    "Image found from twitter:image:src"
-                )
-
-                return image_url
+                if is_valid_image_url(
+                    image_url
+                ):
+                    return image_url
 
     except Exception as e:
 
         logger.warning(
-            "Could not get page image: %s",
+            "Page image error: %s",
             e
         )
 
     return ""
 
 
-def get_article_image(entry, url):
+def get_article_image(
+    entry,
+    url
+):
 
-    # -----------------------------------------------------
-    # 1. RSS image
-    # -----------------------------------------------------
+    image = get_feed_image(entry)
 
-    image_url = get_feed_image(
-        entry
-    )
+    if image:
+        return image
 
-    if image_url:
-
-        return image_url
-
-    # -----------------------------------------------------
-    # 2. Article page image
-    # -----------------------------------------------------
-
-    image_url = get_page_image(
-        url
-    )
-
-    if image_url:
-
-        return image_url
-
-    return ""
+    return get_page_image(url)
 
 
 # =========================================================
-# DOWNLOAD IMAGE
+# IMAGE DOWNLOAD
 # =========================================================
 
 def download_image(image_url):
@@ -800,11 +757,6 @@ def download_image(image_url):
 
     try:
 
-        logger.info(
-            "Downloading image: %s",
-            image_url
-        )
-
         response = requests.get(
             image_url,
             headers=HEADERS,
@@ -813,6 +765,14 @@ def download_image(image_url):
         )
 
         response.raise_for_status()
+
+        content = response.content
+
+        if not content:
+            return None, None
+
+        if len(content) > 10 * 1024 * 1024:
+            return None, None
 
         content_type = (
             response.headers
@@ -823,20 +783,6 @@ def download_image(image_url):
             .lower()
         )
 
-        content = response.content
-
-        if not content:
-
-            logger.warning(
-                "Image response is empty."
-            )
-
-            return None, None
-
-        # -------------------------------------------------
-        # Validate image
-        # -------------------------------------------------
-
         valid_types = (
             "image/jpeg",
             "image/jpg",
@@ -845,65 +791,33 @@ def download_image(image_url):
             "image/gif"
         )
 
-        if not any(
-            x in content_type
-            for x in valid_types
-        ):
+        valid_signature = (
+            content.startswith(b"\xff\xd8\xff")
+            or content.startswith(b"\x89PNG")
+            or content.startswith(b"RIFF")
+            or content.startswith(b"GIF8")
+        )
 
-            if not (
-                content.startswith(b"\xff\xd8\xff")
-                or content.startswith(b"\x89PNG")
-                or content.startswith(b"RIFF")
-                or content.startswith(b"GIF8")
-            ):
-
-                logger.warning(
-                    "Downloaded URL is not a valid image. "
-                    "Content-Type=%s",
-                    content_type
-                )
-
-                return None, None
-
-        # -------------------------------------------------
-        # Size protection
-        # -------------------------------------------------
-
-        max_size = 10 * 1024 * 1024
-
-        if len(content) > max_size:
-
-            logger.warning(
-                "Image too large: %s bytes",
-                len(content)
+        if (
+            not any(
+                x in content_type
+                for x in valid_types
             )
-
+            and not valid_signature
+        ):
             return None, None
 
-        # -------------------------------------------------
-        # Filename
-        # -------------------------------------------------
-
         if "png" in content_type:
-
             filename = "liverpool_news.png"
 
         elif "webp" in content_type:
-
             filename = "liverpool_news.webp"
 
         elif "gif" in content_type:
-
             filename = "liverpool_news.gif"
 
         else:
-
             filename = "liverpool_news.jpg"
-
-        logger.info(
-            "Image downloaded successfully: %s bytes",
-            len(content)
-        )
 
         return content, filename
 
@@ -925,64 +839,11 @@ def collect_news():
 
     articles = []
 
-    # -----------------------------------------------------
-    # Liverpool FC Official
-    # -----------------------------------------------------
-
-    official_feed = get_google_news(
-        "site:liverpoolfc.com/news Liverpool"
-    )
-
-    if official_feed:
-
-        for entry in official_feed.entries[:10]:
-
-            if not is_recent(entry):
-                continue
-
-            title = clean_text(
-                getattr(
-                    entry,
-                    "title",
-                    ""
-                )
-            )
-
-            url = getattr(
-                entry,
-                "link",
-                ""
-            )
-
-            summary = clean_text(
-                getattr(
-                    entry,
-                    "summary",
-                    ""
-                )
-            )
-
-            if not title or not url:
-                continue
-
-            image_url = get_article_image(
-                entry,
-                url
-            )
-
-            articles.append({
-                "title": title,
-                "url": url,
-                "summary": summary,
-                "source": "Liverpool FC Official",
-                "image_url": image_url
-            })
-
-    # -----------------------------------------------------
-    # Trusted Journalists
-    # -----------------------------------------------------
-
-    journalist_queries = [
+    queries = [
+        (
+            "Liverpool FC Official",
+            "site:liverpoolfc.com/news Liverpool"
+        ),
         (
             "David Ornstein",
             '"David Ornstein" Liverpool'
@@ -998,14 +859,12 @@ def collect_news():
         (
             "Fabrizio Romano",
             '"Fabrizio Romano" Liverpool'
-        ),
+        )
     ]
 
-    for source_name, query in journalist_queries:
+    for source_name, query in queries:
 
-        feed = get_google_news(
-            query
-        )
+        feed = get_google_news(query)
 
         if not feed:
             continue
@@ -1040,6 +899,21 @@ def collect_news():
             if not title or not url:
                 continue
 
+            # -------------------------------------------------
+            # REAL SOURCE CHECK
+            # -------------------------------------------------
+
+            if not source_domain_allowed(
+                source_name,
+                url
+            ):
+                logger.info(
+                    "Rejected wrong domain: %s | %s",
+                    source_name,
+                    url
+                )
+                continue
+
             image_url = get_article_image(
                 entry,
                 url
@@ -1054,7 +928,7 @@ def collect_news():
             })
 
     logger.info(
-        "Collected %s articles.",
+        "Collected %s trusted articles.",
         len(articles)
     )
 
@@ -1067,10 +941,10 @@ def collect_news():
 
 LIVERPOOL_KEYWORDS = [
     "liverpool",
-    "reds",
-    "anfield",
-    "lfc",
     "liverpool fc",
+    "lfc",
+    "anfield",
+    "reds",
     "andoni iraola"
 ]
 
@@ -1099,29 +973,32 @@ def appears_liverpool_related(
 SYSTEM_PROMPT = """
 አንተ ለLiverpool FC የአማርኛ Telegram የዜና አርታኢ ነህ።
 
-ዋና ዓላማህ የተሰጠህን የዜና መረጃ ብቻ ተጠቅመህ
-ግልጽ፣ ተፈጥሯዊ እና የስፖርት ዘገባ የሚመስል
-አማርኛ ማዘጋጀት ነው።
+የተሰጠህን መረጃ ብቻ ተጠቅመህ
+ተፈጥሯዊ፣ ግልጽ እና የስፖርት ዘገባ የሚመስል
+አማርኛ ዜና አዘጋጅ።
 
 ጥብቅ ህጎች፦
 
-1. ከተሰጠው article ውጭ ምንም እውነታ አትጨምር።
-2. ምንም quote አትፍጠር።
-3. የዝውውር ዋጋ አትፍጠር።
+1. ከarticle ውጭ እውነታ አትጨምር።
+2. Quote አትፍጠር።
+3. Transfer fee አትፍጠር።
 4. ቀን አትፍጠር።
-5. ጉዳት አትፍጠር።
-6. የውል መረጃ አትፍጠር።
-7. Rumour/report ከሆነ እንደተረጋገጠ አትጻፍ።
-8. እርግጠኛ ያልሆነ መረጃ እርግጠኛ እንደሆነ አታቅርብ።
-9. ዜናው በግልጽ Liverpool FC ላይ ካልሆነ REJECT በል።
-10. አማርኛው ተፈጥሯዊ የስፖርት አማርኛ ይሁን።
-11. እንግሊዝኛን ቃል በቃል አትተርጉም።
+5. Injury አትፍጠር።
+6. Contract information አትፍጠር።
+7. Rumour/report ከሆነ እንደተረጋገጠ አታቅርብ።
+8. እርግጠኛ ያልሆነን መረጃ እርግጠኛ አታድርገው።
+9. Liverpool FC ላይ በግልጽ ካልሆነ REJECT።
+10. ተፈጥሯዊ የስፖርት አማርኛ ተጠቀም።
+11. ቃል በቃል አትተርጉም።
 12. English headline አትጻፍ።
 13. English paragraph አትጻፍ።
 14. Clickbait አትጠቀም።
-15. ተመሳሳይ ሀሳብን ደጋግመህ አትጻፍ።
-16. የዜናውን ዋና ነጥብ በግልጽ አማርኛ አቅርብ።
-17. ስሞችን በተቻለ መጠን ትክክል ጠብቅ።
+15. ተመሳሳይ ሀሳብ አትደግም።
+16. ዋናውን ነጥብ በግልጽ አማርኛ አቅርብ።
+17. የሰዎችን ስም በተቻለ መጠን ትክክል ጠብቅ።
+18. ምንም English sentence በheadline ወይም body ውስጥ አታስገባ።
+19. የarticle summary በጣም አጭር ከሆነ እውነታ አትጨምር።
+20. ዜናው የተረጋገጠ እንዳልሆነ ከሆነ በbody ውስጥ "ሪፖርት"፣ "ዘገባው እንደሚለው" ወይም ተመሳሳይ ቃል ተጠቀም።
 
 JSON ብቻ መልስ።
 
@@ -1130,18 +1007,15 @@ Format:
 {
   "decision": "POST" or "REJECT",
   "category": "news/transfer/rumour/injury/match/other",
-  "headline": "አጭር ተፈጥሯዊ የአማርኛ ርዕስ",
-  "body": "ተፈጥሯዊ የአማርኛ ዜና ይዘት",
+  "headline": "አጭር የአማርኛ ርዕስ",
+  "body": "የአማርኛ ዜና",
   "confidence": 0-100
 }
-
-POST ማለት ለTelegram ተስማሚ ነው።
-REJECT ማለት አትለጥፍ።
 """
 
 
 # =========================================================
-# AI ANALYSIS
+# AI
 # =========================================================
 
 def ai_analyze(article):
@@ -1161,7 +1035,7 @@ def ai_analyze(article):
         ""
     )
 
-    user_prompt = f"""
+    prompt = f"""
 TRUSTED SOURCE:
 {source}
 
@@ -1171,10 +1045,10 @@ TITLE:
 ARTICLE SUMMARY:
 {summary}
 
-ይህን ዜና በተሰጡት ህጎች መሰረት ተንትነው።
+Liverpool FC ላይ የተመሰረተ ዜና ከሆነ ብቻ POST አድርግ።
 
-የመጨረሻው ውጤት ተፈጥሯዊ የሆነ
-የስፖርት አማርኛ ይሁን።
+የተሰጠውን መረጃ ብቻ ተጠቀም።
+ምንም አዲስ እውነታ አትጨምር።
 
 JSON only.
 """
@@ -1187,7 +1061,6 @@ JSON only.
             .completions
             .create(
                 model=GROQ_MODEL,
-
                 messages=[
                     {
                         "role": "system",
@@ -1195,14 +1068,11 @@ JSON only.
                     },
                     {
                         "role": "user",
-                        "content": user_prompt
+                        "content": prompt
                     }
                 ],
-
                 temperature=0.1,
-
                 max_tokens=1000,
-
                 response_format={
                     "type": "json_object"
                 }
@@ -1216,9 +1086,7 @@ JSON only.
             .content
         )
 
-        return json.loads(
-            content
-        )
+        return json.loads(content)
 
     except Exception as e:
 
@@ -1231,7 +1099,7 @@ JSON only.
 
 
 # =========================================================
-# TELEGRAM BOT CHECK
+# TELEGRAM CHECK
 # =========================================================
 
 def telegram_check_bot():
@@ -1248,22 +1116,12 @@ def telegram_check_bot():
             timeout=20
         )
 
-        logger.info(
-            "Telegram getMe status: %s",
-            response.status_code
-        )
-
-        logger.info(
-            "Telegram getMe response: %s",
-            response.text
-        )
-
         if response.status_code != 200:
             return False
 
         data = response.json()
 
-        if data.get("ok") is True:
+        if data.get("ok"):
 
             bot_info = data.get(
                 "result",
@@ -1271,7 +1129,7 @@ def telegram_check_bot():
             )
 
             logger.info(
-                "Telegram bot connected: @%s",
+                "Telegram connected: @%s",
                 bot_info.get(
                     "username",
                     "unknown"
@@ -1280,20 +1138,18 @@ def telegram_check_bot():
 
             return True
 
-        return False
-
     except Exception as e:
 
         logger.exception(
-            "Telegram bot check failed: %s",
+            "Telegram check error: %s",
             e
         )
 
-        return False
+    return False
 
 
 # =========================================================
-# TELEGRAM SEND MESSAGE
+# TELEGRAM TEXT
 # =========================================================
 
 def telegram_send_message(text):
@@ -1312,11 +1168,6 @@ def telegram_send_message(text):
 
     try:
 
-        logger.info(
-            "Sending TEXT to Telegram: %s",
-            CHANNEL_ID
-        )
-
         response = requests.post(
             url,
             json=payload,
@@ -1324,39 +1175,25 @@ def telegram_send_message(text):
         )
 
         logger.info(
-            "Telegram TEXT status: %s",
+            "Telegram text status: %s",
             response.status_code
         )
 
-        logger.info(
-            "Telegram TEXT response: %s",
-            response.text
-        )
-
         if response.status_code != 200:
+            logger.error(
+                "Telegram text error: %s",
+                response.text
+            )
             return False
 
         data = response.json()
 
-        if data.get("ok") is True:
-
-            logger.info(
-                "TEXT SENT SUCCESSFULLY"
-            )
-
-            return True
-
-        logger.error(
-            "Telegram rejected message: %s",
-            data
-        )
-
-        return False
+        return data.get("ok") is True
 
     except Exception as e:
 
         logger.exception(
-            "Telegram connection error: %s",
+            "Telegram send error: %s",
             e
         )
 
@@ -1364,7 +1201,7 @@ def telegram_send_message(text):
 
 
 # =========================================================
-# TELEGRAM SEND PHOTO
+# TELEGRAM PHOTO
 # =========================================================
 
 def telegram_send_photo(
@@ -1372,33 +1209,14 @@ def telegram_send_photo(
     caption
 ):
 
-    if not image_url:
-
-        logger.warning(
-            "No image URL provided."
-        )
-
-        return False
-
-    # -----------------------------------------------------
-    # DOWNLOAD IMAGE FIRST
-    # -----------------------------------------------------
-
     image_data, filename = download_image(
         image_url
     )
 
     if not image_data:
-
-        logger.warning(
-            "Could not download image."
-        )
-
         return False
 
-    # Telegram photo captions have a limited size.
     if len(caption) > 1024:
-
         caption = (
             caption[:1020]
             + "..."
@@ -1408,10 +1226,6 @@ def telegram_send_photo(
         f"https://api.telegram.org/bot"
         f"{BOT_TOKEN}/sendPhoto"
     )
-
-    # -----------------------------------------------------
-    # Multipart upload
-    # -----------------------------------------------------
 
     files = {
         "photo": (
@@ -1429,11 +1243,6 @@ def telegram_send_photo(
 
     try:
 
-        logger.info(
-            "Sending PHOTO to Telegram: %s",
-            CHANNEL_ID
-        )
-
         response = requests.post(
             url,
             data=data,
@@ -1442,39 +1251,25 @@ def telegram_send_photo(
         )
 
         logger.info(
-            "Telegram PHOTO status: %s",
+            "Telegram photo status: %s",
             response.status_code
         )
 
-        logger.info(
-            "Telegram PHOTO response: %s",
-            response.text
-        )
-
         if response.status_code != 200:
+            logger.error(
+                "Telegram photo error: %s",
+                response.text
+            )
             return False
 
         result = response.json()
 
-        if result.get("ok") is True:
-
-            logger.info(
-                "PHOTO SENT SUCCESSFULLY"
-            )
-
-            return True
-
-        logger.error(
-            "Telegram rejected photo: %s",
-            result
-        )
-
-        return False
+        return result.get("ok") is True
 
     except Exception as e:
 
         logger.exception(
-            "Telegram photo connection error: %s",
+            "Telegram photo error: %s",
             e
         )
 
@@ -1502,20 +1297,11 @@ def build_telegram_message(result):
     )
 
     if not headline or not body:
-
         return None
 
-    headline = escape_html(
-        headline
-    )
-
-    body = escape_html(
-        body
-    )
-
     return (
-        f"<b>{headline}</b>\n\n"
-        f"{body}\n\n"
+        f"<b>{escape_html(headline)}</b>\n\n"
+        f"{escape_html(body)}\n\n"
         f"<b>@yegnaLiverpool</b>"
     )
 
@@ -1546,28 +1332,40 @@ def process_article(article):
         ""
     )
 
-    if not title or not url:
+    source = article.get(
+        "source",
+        ""
+    )
 
+    if not title or not url:
         return False
 
     # -----------------------------------------------------
-    # Liverpool check
+    # Liverpool filter
     # -----------------------------------------------------
 
     if not appears_liverpool_related(
         title,
         summary
     ):
-
         logger.info(
-            "Rejected: not Liverpool: %s",
+            "Rejected non-Liverpool article: %s",
             title
         )
-
         return False
 
     # -----------------------------------------------------
-    # Duplicate check
+    # Trusted source verification
+    # -----------------------------------------------------
+
+    if not source_domain_allowed(
+        source,
+        url
+    ):
+        return False
+
+    # -----------------------------------------------------
+    # Exact duplicate
     # -----------------------------------------------------
 
     fingerprint = make_fingerprint(
@@ -1578,12 +1376,23 @@ def process_article(article):
     if already_posted(
         fingerprint
     ):
-
         logger.info(
-            "Duplicate skipped: %s",
+            "Exact duplicate skipped: %s",
             title
         )
+        return False
 
+    # -----------------------------------------------------
+    # Similar duplicate
+    # -----------------------------------------------------
+
+    if similar_news_already_posted(
+        title
+    ):
+        logger.info(
+            "Similar news skipped: %s",
+            title
+        )
         return False
 
     # -----------------------------------------------------
@@ -1595,17 +1404,9 @@ def process_article(article):
         title
     )
 
-    result = ai_analyze(
-        article
-    )
+    result = ai_analyze(article)
 
     if not result:
-
-        logger.warning(
-            "AI failed: %s",
-            title
-        )
-
         return False
 
     decision = str(
@@ -1616,75 +1417,52 @@ def process_article(article):
     ).upper()
 
     try:
-
         confidence = int(
             result.get(
                 "confidence",
                 0
             ) or 0
         )
-
     except Exception:
-
         confidence = 0
 
-    logger.info(
-        "AI decision=%s confidence=%s",
-        decision,
-        confidence
-    )
-
     if decision != "POST":
-
+        logger.info(
+            "AI rejected: %s",
+            title
+        )
         return False
 
     if confidence < 75:
-
         logger.info(
-            "Low confidence: %s",
+            "Confidence too low: %s",
             confidence
         )
-
         return False
-
-    # -----------------------------------------------------
-    # Build message
-    # -----------------------------------------------------
 
     message = build_telegram_message(
         result
     )
 
     if not message:
-
         return False
 
     # -----------------------------------------------------
-    # IMAGE
+    # PHOTO
     # -----------------------------------------------------
 
     if image_url:
 
-        logger.info(
-            "Trying article image: %s",
-            image_url
-        )
-
-        sent = telegram_send_photo(
+        if telegram_send_photo(
             image_url,
             message
-        )
-
-        if sent:
+        ):
 
             save_posted(
                 fingerprint,
                 title,
                 url,
-                article.get(
-                    "source",
-                    ""
-                )
+                source
             )
 
             logger.info(
@@ -1694,17 +1472,7 @@ def process_article(article):
 
             return True
 
-        logger.warning(
-            "First image failed."
-        )
-
-        # -------------------------------------------------
-        # SECOND IMAGE ATTEMPT
-        # -------------------------------------------------
-
-        logger.info(
-            "Trying article page image fallback..."
-        )
+        # fallback image
 
         fallback_image = get_page_image(
             url
@@ -1715,26 +1483,16 @@ def process_article(article):
             and fallback_image != image_url
         ):
 
-            logger.info(
-                "Trying fallback image: %s",
-                fallback_image
-            )
-
-            sent = telegram_send_photo(
+            if telegram_send_photo(
                 fallback_image,
                 message
-            )
-
-            if sent:
+            ):
 
                 save_posted(
                     fingerprint,
                     title,
                     url,
-                    article.get(
-                        "source",
-                        ""
-                    )
+                    source
                 )
 
                 logger.info(
@@ -1744,49 +1502,29 @@ def process_article(article):
 
                 return True
 
-    else:
-
-        logger.info(
-            "No article image found."
-        )
-
     # -----------------------------------------------------
     # TEXT FALLBACK
     # -----------------------------------------------------
 
-    logger.info(
-        "Trying TEXT fallback..."
-    )
-
-    sent = telegram_send_message(
+    if telegram_send_message(
         message
-    )
+    ):
 
-    if not sent:
+        save_posted(
+            fingerprint,
+            title,
+            url,
+            source
+        )
 
-        logger.error(
-            "NOT POSTED TO TELEGRAM: %s",
+        logger.info(
+            "POSTED TEXT ONLY: %s",
             title
         )
 
-        return False
+        return True
 
-    save_posted(
-        fingerprint,
-        title,
-        url,
-        article.get(
-            "source",
-            ""
-        )
-    )
-
-    logger.info(
-        "POSTED TEXT ONLY: %s",
-        title
-    )
-
-    return True
+    return False
 
 
 # =========================================================
@@ -1796,35 +1534,32 @@ def process_article(article):
 def check_news():
 
     logger.info(
-        "===================================="
-    )
-
-    logger.info(
-        "Checking Liverpool trusted sources..."
+        "Checking trusted Liverpool news..."
     )
 
     articles = collect_news()
 
     if not articles:
-
         logger.info(
-            "No recent articles found."
+            "No recent news."
         )
-
         return
 
     posted_count = 0
 
-    for article in articles[:30]:
+    # Sort newest entries first when dates are available.
+    # Google News already generally does this.
+
+    for article in articles:
+
+        if posted_count >= 3:
+            break
 
         try:
 
-            posted = process_article(
+            if process_article(
                 article
-            )
-
-            if posted:
-
+            ):
                 posted_count += 1
 
             time.sleep(2)
@@ -1832,13 +1567,9 @@ def check_news():
         except Exception as e:
 
             logger.exception(
-                "Article processing error: %s",
+                "Article error: %s",
                 e
             )
-
-    logger.info(
-        "===================================="
-    )
 
     logger.info(
         "News finished. Posted: %s",
@@ -1847,7 +1578,7 @@ def check_news():
 
 
 # =========================================================
-# ESPN LIVE DATA
+# ESPN
 # =========================================================
 
 def get_liverpool_scoreboard():
@@ -1872,7 +1603,7 @@ def get_liverpool_scoreboard():
     except Exception as e:
 
         logger.error(
-            "ESPN scoreboard error: %s",
+            "ESPN error: %s",
             e
         )
 
@@ -1880,57 +1611,47 @@ def get_liverpool_scoreboard():
 
 
 # =========================================================
-# FIND LIVERPOOL MATCH
+# FIND MATCH
 # =========================================================
 
 def find_liverpool_match(data):
 
     if not data:
-
         return None
 
-    events = data.get(
+    for event in data.get(
         "events",
         []
-    )
+    ):
 
-    for event in events:
-
-        competitions = event.get(
+        for competition in event.get(
             "competitions",
             []
-        )
+        ):
 
-        for competition in competitions:
-
-            competitors = competition.get(
+            for team in competition.get(
                 "competitors",
                 []
-            )
-
-            for team in competitors:
-
-                team_info = team.get(
-                    "team",
-                    {}
-                )
+            ):
 
                 team_id = str(
-                    team_info.get(
+                    team.get(
+                        "team",
+                        {}
+                    ).get(
                         "id",
                         ""
                     )
                 )
 
                 if team_id == LIVERPOOL_TEAM_ID:
-
                     return event
 
     return None
 
 
 # =========================================================
-# MATCH STATUS
+# STATUS
 # =========================================================
 
 def get_match_status(event):
@@ -1945,26 +1666,24 @@ def get_match_status(event):
         {}
     )
 
-    state = type_data.get(
-        "state",
-        ""
+    return (
+        type_data.get(
+            "state",
+            ""
+        ),
+        type_data.get(
+            "name",
+            ""
+        ),
+        type_data.get(
+            "detail",
+            ""
+        )
     )
-
-    name = type_data.get(
-        "name",
-        ""
-    )
-
-    detail = type_data.get(
-        "detail",
-        ""
-    )
-
-    return state, name, detail
 
 
 # =========================================================
-# MATCH TEAMS
+# TEAMS
 # =========================================================
 
 def get_match_teams(event):
@@ -1975,7 +1694,6 @@ def get_match_teams(event):
     )
 
     if not competitions:
-
         return None, None
 
     competitors = competitions[0].get(
@@ -1991,20 +1709,18 @@ def get_match_teams(event):
         if team.get(
             "homeAway"
         ) == "home":
-
             home = team
 
         elif team.get(
             "homeAway"
         ) == "away":
-
             away = team
 
     return home, away
 
 
 # =========================================================
-# MATCH SCORE TEXT
+# SCORE
 # =========================================================
 
 def match_score_text(
@@ -2013,7 +1729,6 @@ def match_score_text(
 ):
 
     if not home or not away:
-
         return ""
 
     home_name = home.get(
@@ -2049,7 +1764,7 @@ def match_score_text(
 
 
 # =========================================================
-# LIVE EVENT EXTRACTION
+# LIVE EVENTS
 # =========================================================
 
 def extract_live_events(event):
@@ -2062,12 +1777,9 @@ def extract_live_events(event):
     )
 
     if not competitions:
-
         return result
 
-    competition = competitions[0]
-
-    details = competition.get(
+    details = competitions[0].get(
         "details",
         []
     )
@@ -2079,86 +1791,75 @@ def extract_live_events(event):
             {}
         )
 
-        player_name = athlete.get(
+        player = athlete.get(
             "displayName",
             ""
         )
 
-        type_data = detail.get(
-            "type",
-            {}
+        event_type = (
+            detail.get(
+                "type",
+                {}
+            ).get(
+                "text",
+                ""
+            ).lower()
         )
-
-        event_type = type_data.get(
-            "text",
-            ""
-        ).lower()
 
         clock = detail.get(
             "clock",
             {}
         )
 
-        display_value = clock.get(
-            "displayValue",
-            ""
-        )
-
-        if not display_value:
-
-            display_value = (
-                detail
-                .get(
-                    "clock",
-                    {}
-                )
-                .get(
+        minute = (
+            clock.get(
+                "displayValue",
+                ""
+            )
+            or str(
+                clock.get(
                     "value",
                     ""
                 )
             )
-
-        team = detail.get(
-            "team",
-            {}
         )
 
         team_id = str(
-            team.get(
+            detail.get(
+                "team",
+                {}
+            ).get(
                 "id",
                 ""
             )
         )
 
+        # አሁን የLiverpool ተጫዋች event ብቻ
         if team_id != LIVERPOOL_TEAM_ID:
-
             continue
 
         if "goal" in event_type:
 
             result.append({
                 "type": "goal",
-                "player": player_name,
-                "minute": display_value,
-                "raw": detail
+                "player": player,
+                "minute": minute
             })
 
         elif "yellow" in event_type:
 
             result.append({
                 "type": "yellow",
-                "player": player_name,
-                "minute": display_value,
-                "raw": detail
+                "player": player,
+                "minute": minute
             })
 
         elif "red" in event_type:
 
             result.append({
                 "type": "red",
-                "player": player_name,
-                "minute": display_value,
-                "raw": detail
+                "player": player,
+                "minute": minute
             })
 
         elif (
@@ -2168,9 +1869,8 @@ def extract_live_events(event):
 
             result.append({
                 "type": "substitution",
-                "player": player_name,
-                "minute": display_value,
-                "raw": detail
+                "player": player,
+                "minute": minute
             })
 
     return result
@@ -2195,85 +1895,81 @@ def build_live_message(
         away
     )
 
-    state, name, detail = get_match_status(
+    _, name, detail = get_match_status(
         event
     )
 
     if event_type == "start":
 
-        message = (
+        return (
             "🔴 <b>የጨዋታ መጀመሪያ</b>\n\n"
             f"⚽ {escape_html(score)}\n\n"
             f"▶️ {escape_html(detail or name)}\n\n"
             "<b>@yegnaLiverpool</b>"
         )
 
-    elif event_type == "goal":
+    if event_type == "goal":
 
-        message = (
+        return (
             "⚽ <b>ጎል!</b>\n\n"
-            f"{escape_html(score)}\n\n"
             f"{escape_html(extra_text)}\n\n"
+            f"⚽ {escape_html(score)}\n\n"
             "<b>@yegnaLiverpool</b>"
         )
 
-    elif event_type == "yellow":
+    if event_type == "yellow":
 
-        message = (
+        return (
             "🟨 <b>ቢጫ ካርድ</b>\n\n"
             f"{escape_html(extra_text)}\n\n"
             f"{escape_html(score)}\n\n"
             "<b>@yegnaLiverpool</b>"
         )
 
-    elif event_type == "red":
+    if event_type == "red":
 
-        message = (
+        return (
             "🟥 <b>ቀይ ካርድ</b>\n\n"
             f"{escape_html(extra_text)}\n\n"
             f"{escape_html(score)}\n\n"
             "<b>@yegnaLiverpool</b>"
         )
 
-    elif event_type == "substitution":
+    if event_type == "substitution":
 
-        message = (
+        return (
             "🔄 <b>ቅያሬ</b>\n\n"
             f"{escape_html(extra_text)}\n\n"
             f"{escape_html(score)}\n\n"
             "<b>@yegnaLiverpool</b>"
         )
 
-    elif event_type == "halftime":
+    if event_type == "halftime":
 
-        message = (
+        return (
             "⏸️ <b>እረፍት</b>\n\n"
             f"⚽ {escape_html(score)}\n\n"
             "<b>@yegnaLiverpool</b>"
         )
 
-    elif event_type == "fulltime":
+    if event_type == "fulltime":
 
-        message = (
+        return (
             "🏁 <b>ጨዋታው ተጠናቋል</b>\n\n"
             f"⚽ {escape_html(score)}\n\n"
             "<b>@yegnaLiverpool</b>"
         )
 
-    else:
-
-        message = (
-            "⚽ <b>LIVE</b>\n\n"
-            f"{escape_html(score)}\n\n"
-            f"{escape_html(extra_text)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    return message
+    return (
+        "⚽ <b>LIVE</b>\n\n"
+        f"⚽ {escape_html(score)}\n\n"
+        f"{escape_html(extra_text)}\n\n"
+        "<b>@yegnaLiverpool</b>"
+    )
 
 
 # =========================================================
-# PROCESS LIVE MATCH
+# LIVE MATCH
 # =========================================================
 
 def process_live_match():
@@ -2285,11 +1981,6 @@ def process_live_match():
     data = get_liverpool_scoreboard()
 
     if not data:
-
-        logger.warning(
-            "No live data received."
-        )
-
         return
 
     event = find_liverpool_match(
@@ -2299,7 +1990,7 @@ def process_live_match():
     if not event:
 
         logger.info(
-            "No Liverpool match today."
+            "No Liverpool match found."
         )
 
         return
@@ -2320,11 +2011,12 @@ def process_live_match():
     )
 
     logger.info(
-        "Liverpool match found: %s",
+        "Liverpool match: %s | state=%s",
         match_score_text(
             home,
             away
-        )
+        ),
+        state
     )
 
     # -----------------------------------------------------
@@ -2333,12 +2025,12 @@ def process_live_match():
 
     if state == "pre":
 
-        status_key = (
-            f"{event_id}|status|pre"
+        key = (
+            f"{event_id}|pre"
         )
 
         if not live_event_already_posted(
-            status_key
+            key
         ):
 
             message = build_live_message(
@@ -2352,34 +2044,34 @@ def process_live_match():
             ):
 
                 save_live_event(
-                    status_key,
-                    "start",
+                    key,
+                    "pre",
                     message
                 )
+
+        return
 
     # -----------------------------------------------------
     # LIVE
     # -----------------------------------------------------
 
-    elif state == "in":
+    if state == "in":
 
-        live_events = extract_live_events(
+        # Events
+        for item in extract_live_events(
             event
-        )
-
-        for item in live_events:
+        ):
 
             event_key = (
                 f"{event_id}|"
                 f"{item['type']}|"
-                f"{item.get('player', '')}|"
-                f"{item.get('minute', '')}"
+                f"{item.get('player','')}|"
+                f"{item.get('minute','')}"
             )
 
             if live_event_already_posted(
                 event_key
             ):
-
                 continue
 
             player = item.get(
@@ -2437,35 +2129,33 @@ def process_live_match():
                 )
 
         # -------------------------------------------------
-        # SCORE / TIME UPDATE
+        # SCORE/TIME UPDATE
         # -------------------------------------------------
 
-        minute_key = (
-            event
-            .get(
-                "status",
-                {}
-            )
-            .get(
-                "displayClock",
-                ""
-            )
+        status = event.get(
+            "status",
+            {}
         )
 
-        if minute_key:
+        clock = status.get(
+            "displayClock",
+            ""
+        )
 
-            update_key = (
-                f"{event_id}|score|{minute_key}"
+        if clock:
+
+            key = (
+                f"{event_id}|clock|{clock}"
             )
 
             if not live_event_already_posted(
-                update_key
+                key
             ):
 
                 message = build_live_message(
                     event,
                     "live",
-                    f"⏱️ የጨዋታ ሁኔታ፦ {minute_key}"
+                    f"⏱️ የጨዋታ ሰዓት፦ {clock}"
                 )
 
                 if telegram_send_message(
@@ -2473,23 +2163,25 @@ def process_live_match():
                 ):
 
                     save_live_event(
-                        update_key,
-                        "score_update",
+                        key,
+                        "clock",
                         message
                     )
+
+        return
 
     # -----------------------------------------------------
     # FULL TIME
     # -----------------------------------------------------
 
-    elif state == "post":
+    if state == "post":
 
-        fulltime_key = (
+        key = (
             f"{event_id}|fulltime"
         )
 
         if not live_event_already_posted(
-            fulltime_key
+            key
         ):
 
             message = build_live_message(
@@ -2502,17 +2194,10 @@ def process_live_match():
             ):
 
                 save_live_event(
-                    fulltime_key,
+                    key,
                     "fulltime",
                     message
                 )
-
-    else:
-
-        logger.info(
-            "Liverpool match state: %s",
-            state
-        )
 
 
 # =========================================================
@@ -2538,15 +2223,17 @@ def main():
         "Mode: DIRECT TELEGRAM API"
     )
 
-    logger.info(
-        "Polling: DISABLED"
-    )
-
     # -----------------------------------------------------
-    # TELEGRAM CONNECTION CHECK
+    # TELEGRAM
     # -----------------------------------------------------
 
-    telegram_check_bot()
+    if not telegram_check_bot():
+
+        logger.error(
+            "Telegram bot connection failed."
+        )
+
+        return
 
     # -----------------------------------------------------
     # NEWS
@@ -2564,7 +2251,7 @@ def main():
         )
 
     # -----------------------------------------------------
-    # LIVE MATCH
+    # LIVE
     # -----------------------------------------------------
 
     try:
@@ -2574,7 +2261,7 @@ def main():
     except Exception as e:
 
         logger.exception(
-            "LIVE match check failed: %s",
+            "LIVE check failed: %s",
             e
         )
 
@@ -2592,5 +2279,4 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
-
     main()
