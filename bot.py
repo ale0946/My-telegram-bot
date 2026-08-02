@@ -59,8 +59,10 @@ if not BOT_TOKEN:
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is missing.")
 
-if not CHANNEL_ID:
-    raise RuntimeError("CHANNEL_ID is missing.")
+CHANNEL_ID = os.getenv(
+    "CHANNEL_ID",
+    "@yegnaLiverpool"
+).strip()
 
 # =========================================================
 # LOGGING
