@@ -1,3 +1,88 @@
+import os
+import re
+import json
+import time
+import hashlib
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from urllib.parse import quote_plus, urlparse
+
+import feedparser
+import requests
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from groq import Groq
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+
+CHANNEL_ID = os.getenv(
+    "CHANNEL_ID",
+    "@yegnaLiverpool"
+).strip()
+
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b"
+).strip()
+
+MAX_NEWS_AGE_HOURS = int(
+    os.getenv("MAX_NEWS_AGE_HOURS", "24")
+)
+
+# ---------------------------------------------------------
+# IMPORTANT:
+# 5 minutes between news posts
+# ---------------------------------------------------------
+
+CHECK_INTERVAL_MINUTES = int(
+    os.getenv("CHECK_INTERVAL_MINUTES", "5")
+)
+
+# 5 minutes between individual news posts
+NEWS_POST_DELAY_SECONDS = (
+    CHECK_INTERVAL_MINUTES * 60
+)
+
+LIVERPOOL_TEAM_ID = "364"
+
+DB_FILE = "news.db"
+
+
+# =========================================================
+# VALIDATION
+# =========================================================
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is missing.")
+
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is missing.")
+
+if not CHANNEL_ID:
+    raise RuntimeError("CHANNEL_ID is missing.")
+
+
+# =========================================================
+# LOGGING
+# =========================================================
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
+)
+
+logger = logging.getLogger(__name__)
+
+
 # =========================================================
 # GROQ
 # =========================================================
@@ -42,7 +127,6 @@ db.commit()
 
 # =========================================================
 # TRUSTED SOURCES
-# ONLY THESE 5 SOURCES ARE ALLOWED
 # =========================================================
 
 TRUSTED_SOURCES = {
@@ -58,8 +142,10 @@ TRUSTED_SOURCES = {
     "James Pearce": [
         "theathletic.com"
     ],
-    "David Lynch": [
-        "davidlynchlfc.co.uk"
+    "Fabrizio Romano": [
+        "x.com",
+        "twitter.com",
+        "fabricioromano.com"
     ],
 }
 
@@ -386,7 +472,7 @@ def is_recent(entry):
 
 
 # =========================================================
-# GOOGLE NEWS RSS
+# GOOGLE NEWS
 # =========================================================
 
 def google_news_rss(query):
@@ -517,11 +603,8 @@ def source_domain_allowed(
         []
     )
 
-    if not allowed:
-        return False
-
     # -----------------------------------------------------
-    # 1. RSS SOURCE DOMAIN
+    # First: RSS source domain
     # -----------------------------------------------------
 
     if rss_source_domain:
@@ -533,7 +616,7 @@ def source_domain_allowed(
             return True
 
     # -----------------------------------------------------
-    # 2. ORIGINAL URL
+    # Second: original URL
     # -----------------------------------------------------
 
     original_domain = get_domain(
@@ -547,7 +630,7 @@ def source_domain_allowed(
         return True
 
     # -----------------------------------------------------
-    # 3. RESOLVED URL
+    # Third: resolved URL
     # -----------------------------------------------------
 
     resolved = resolve_article_url(
@@ -565,9 +648,7 @@ def source_domain_allowed(
         return True
 
     return False
-
-
-# =========================================================
+    # =========================================================
 # IMAGE
 # =========================================================
 
@@ -843,19 +924,27 @@ def download_image(image_url):
 
         if "png" in content_type:
 
-            filename = "liverpool_news.png"
+            filename = (
+                "liverpool_news.png"
+            )
 
         elif "webp" in content_type:
 
-            filename = "liverpool_news.webp"
+            filename = (
+                "liverpool_news.webp"
+            )
 
         elif "gif" in content_type:
 
-            filename = "liverpool_news.gif"
+            filename = (
+                "liverpool_news.gif"
+            )
 
         else:
 
-            filename = "liverpool_news.jpg"
+            filename = (
+                "liverpool_news.jpg"
+            )
 
         return content, filename
 
@@ -870,8 +959,38 @@ def download_image(image_url):
 
 
 # =========================================================
+# LIVERPOOL FILTER
+# =========================================================
+
+LIVERPOOL_KEYWORDS = [
+    "liverpool",
+    "liverpool fc",
+    "lfc",
+    "anfield",
+    "reds",
+    "andoni iraola"
+]
+
+
+def appears_liverpool_related(
+    title,
+    summary
+):
+
+    text = (
+        title
+        + " "
+        + summary
+    ).lower()
+
+    return any(
+        keyword in text
+        for keyword in LIVERPOOL_KEYWORDS
+    )
+
+
+# =========================================================
 # NEWS COLLECTION
-# ONLY 5 TRUSTED SOURCES
 # =========================================================
 
 def collect_news():
@@ -896,15 +1015,15 @@ def collect_news():
             '"James Pearce" Liverpool'
         ),
         (
-            "David Lynch",
-            '"David Lynch" Liverpool'
+            "Fabrizio Romano",
+            '"Fabrizio Romano" Liverpool'
         )
     ]
 
     for source_name, query in queries:
 
         logger.info(
-            "Searching trusted source: %s",
+            "Searching: %s",
             source_name
         )
 
@@ -977,16 +1096,20 @@ def collect_news():
 
                 if rss_source:
 
-                    rss_source_href = getattr(
-                        rss_source,
-                        "href",
-                        ""
+                    rss_source_domain = (
+                        getattr(
+                            rss_source,
+                            "href",
+                            ""
+                        )
                     )
 
-                    if rss_source_href:
+                    if rss_source_domain:
 
-                        rss_source_domain = get_domain(
-                            rss_source_href
+                        rss_source_domain = (
+                            get_domain(
+                                rss_source_domain
+                            )
                         )
 
             except Exception:
@@ -1054,37 +1177,6 @@ def collect_news():
 
 
 # =========================================================
-# LIVERPOOL FILTER
-# =========================================================
-
-LIVERPOOL_KEYWORDS = [
-    "liverpool",
-    "liverpool fc",
-    "lfc",
-    "anfield",
-    "reds",
-    "andoni iraola"
-]
-
-
-def appears_liverpool_related(
-    title,
-    summary
-):
-
-    text = (
-        title
-        + " "
-        + summary
-    ).lower()
-
-    return any(
-        keyword in text
-        for keyword in LIVERPOOL_KEYWORDS
-    )
-
-
-# =========================================================
 # AI SYSTEM PROMPT
 # =========================================================
 
@@ -1117,13 +1209,6 @@ SYSTEM_PROMPT = """
 18. ምንም English sentence በheadline ወይም body ውስጥ አታስገባ።
 19. የarticle summary በጣም አጭር ከሆነ እውነታ አትጨምር።
 20. ዜናው የተረጋገጠ እንዳልሆነ ከሆነ በbody ውስጥ "ሪፖርት"፣ "ዘገባው እንደሚለው" ወይም ተመሳሳይ ቃል ተጠቀም።
-21. የተሰጠው ጽሑፍ የተበላሸ ወይም ትርጉሙ ግልጽ ካልሆነ REJECT አድርግ።
-22. የሰው፣ የክለብ፣ የቦታ ወይም የድርጅት ስም ትርጉም አታድርግ።
-23. የarticle ዋና ሀሳብ ግልጽ ካልሆነ ዜና አታመንጭ።
-24. የተሰጠውን መረጃ በመድገም ብቻ የተፈጠረ ዜና አትስራ።
-25. የምንጩ ዘገባ ከሆነ ምንጩን እንደ እውነታ አታቅርብ።
-26. አማርኛው የተፈጥሮ የስፖርት ዘገባ እንዲመስል አድርግ።
-27. ቃል በቃል ከመተርጎም ይልቅ የእንግሊዝኛውን ሀሳብ በትክክለኛ አማርኛ ግልጽ አድርግ።
 
 JSON ብቻ መልስ።
 
@@ -1159,10 +1244,6 @@ Liverpool FC ላይ የተመሰረተ ዜና ከሆነ ብቻ POST አድርግ
 
 የተሰጠውን መረጃ ብቻ ተጠቀም።
 ምንም አዲስ እውነታ አትጨምር።
-
-አማርኛው ተፈጥሯዊ የስፖርት ዘገባ እንዲመስል አድርግ።
-ቃል በቃል አትተርጉም።
-ትርጉሙ ግልጽ ካልሆነ REJECT አድርግ።
 
 JSON only.
 """
@@ -1212,8 +1293,651 @@ JSON only.
         )
 
         return None
+ # =========================================================
+# IMAGE
+# =========================================================
+
+def is_valid_image_url(url):
+
+    if not url:
+        return False
+
+    return str(url).strip().startswith(
+        (
+            "http://",
+            "https://"
+        )
+    )
 
 
+def get_feed_image(entry):
+
+    try:
+
+        for media in getattr(
+            entry,
+            "media_content",
+            []
+        ):
+
+            url = media.get(
+                "url",
+                ""
+            )
+
+            if is_valid_image_url(url):
+                return url
+
+    except Exception:
+        pass
+
+    try:
+
+        for media in getattr(
+            entry,
+            "media_thumbnail",
+            []
+        ):
+
+            url = media.get(
+                "url",
+                ""
+            )
+
+            if is_valid_image_url(url):
+                return url
+
+    except Exception:
+        pass
+
+    try:
+
+        for enclosure in getattr(
+            entry,
+            "enclosures",
+            []
+        ):
+
+            url = (
+                enclosure.get(
+                    "href",
+                    ""
+                )
+                or enclosure.get(
+                    "url",
+                    ""
+                )
+            )
+
+            if is_valid_image_url(url):
+                return url
+
+    except Exception:
+        pass
+
+    try:
+
+        summary = getattr(
+            entry,
+            "summary",
+            ""
+        )
+
+        soup = BeautifulSoup(
+            summary,
+            "html.parser"
+        )
+
+        image = soup.find("img")
+
+        if image:
+
+            url = (
+                image.get(
+                    "src",
+                    ""
+                )
+                or image.get(
+                    "data-src",
+                    ""
+                )
+            )
+
+            if is_valid_image_url(url):
+                return url
+
+    except Exception:
+        pass
+
+    return ""
+
+
+def get_page_image(url):
+
+    if not url:
+        return ""
+
+    try:
+
+        actual_url = resolve_article_url(
+            url
+        )
+
+        response = requests.get(
+            actual_url,
+            headers=HEADERS,
+            timeout=20
+        )
+
+        response.raise_for_status()
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+
+        selectors = [
+            {
+                "property": "og:image"
+            },
+            {
+                "name": "twitter:image"
+            },
+            {
+                "name": "twitter:image:src"
+            }
+        ]
+
+        for attrs in selectors:
+
+            image = soup.find(
+                "meta",
+                attrs=attrs
+            )
+
+            if image:
+
+                image_url = image.get(
+                    "content",
+                    ""
+                )
+
+                if is_valid_image_url(
+                    image_url
+                ):
+                    return image_url
+
+    except Exception as e:
+
+        logger.warning(
+            "Page image error: %s",
+            e
+        )
+
+    return ""
+
+
+def get_article_image(
+    entry,
+    url
+):
+
+    image = get_feed_image(
+        entry
+    )
+
+    if image:
+        return image
+
+    return get_page_image(
+        url
+    )
+
+
+# =========================================================
+# DOWNLOAD IMAGE
+# =========================================================
+
+def download_image(image_url):
+
+    if not is_valid_image_url(
+        image_url
+    ):
+        return None, None
+
+    try:
+
+        response = requests.get(
+            image_url,
+            headers=HEADERS,
+            timeout=30,
+            allow_redirects=True
+        )
+
+        response.raise_for_status()
+
+        content = response.content
+
+        if not content:
+            return None, None
+
+        if len(content) > (
+            10 * 1024 * 1024
+        ):
+            return None, None
+
+        content_type = (
+            response.headers
+            .get(
+                "Content-Type",
+                ""
+            )
+            .lower()
+        )
+
+        valid_signature = (
+            content.startswith(
+                b"\xff\xd8\xff"
+            )
+            or content.startswith(
+                b"\x89PNG"
+            )
+            or content.startswith(
+                b"RIFF"
+            )
+            or content.startswith(
+                b"GIF8"
+            )
+        )
+
+        valid_types = (
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+            "image/webp",
+            "image/gif"
+        )
+
+        if (
+            not any(
+                x in content_type
+                for x in valid_types
+            )
+            and not valid_signature
+        ):
+            return None, None
+
+        if "png" in content_type:
+
+            filename = (
+                "liverpool_news.png"
+            )
+
+        elif "webp" in content_type:
+
+            filename = (
+                "liverpool_news.webp"
+            )
+
+        elif "gif" in content_type:
+
+            filename = (
+                "liverpool_news.gif"
+            )
+
+        else:
+
+            filename = (
+                "liverpool_news.jpg"
+            )
+
+        return content, filename
+
+    except Exception as e:
+
+        logger.warning(
+            "Image download failed: %s",
+            e
+        )
+
+        return None, None
+
+
+# =========================================================
+# LIVERPOOL FILTER
+# =========================================================
+
+LIVERPOOL_KEYWORDS = [
+    "liverpool",
+    "liverpool fc",
+    "lfc",
+    "anfield",
+    "reds",
+    "andoni iraola"
+]
+
+
+def appears_liverpool_related(
+    title,
+    summary
+):
+
+    text = (
+        title
+        + " "
+        + summary
+    ).lower()
+
+    return any(
+        keyword in text
+        for keyword in LIVERPOOL_KEYWORDS
+    )
+
+
+# =========================================================
+# NEWS COLLECTION
+# =========================================================
+
+def collect_news():
+
+    articles = []
+
+    queries = [
+        (
+            "Liverpool FC Official",
+            "site:liverpoolfc.com/news Liverpool"
+        ),
+        (
+            "David Ornstein",
+            '"David Ornstein" Liverpool'
+        ),
+        (
+            "Paul Joyce",
+            '"Paul Joyce" Liverpool'
+        ),
+        (
+            "James Pearce",
+            '"James Pearce" Liverpool'
+        ),
+        (
+            "Fabrizio Romano",
+            '"Fabrizio Romano" Liverpool'
+        )
+    ]
+
+    for source_name, query in queries:
+
+        logger.info(
+            "Searching: %s",
+            source_name
+        )
+
+        feed = get_google_news(
+            query
+        )
+
+        if not feed:
+
+            logger.warning(
+                "No feed: %s",
+                source_name
+            )
+
+            continue
+
+        for entry in feed.entries[:10]:
+
+            title = clean_text(
+                getattr(
+                    entry,
+                    "title",
+                    ""
+                )
+            )
+
+            url = getattr(
+                entry,
+                "link",
+                ""
+            )
+
+            summary = clean_text(
+                getattr(
+                    entry,
+                    "summary",
+                    ""
+                )
+            )
+
+            if not title or not url:
+                continue
+
+            # -------------------------------------------------
+            # RECENT
+            # -------------------------------------------------
+
+            if not is_recent(entry):
+
+                logger.info(
+                    "Old article skipped: %s",
+                    title
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # RSS SOURCE
+            # -------------------------------------------------
+
+            rss_source_domain = ""
+
+            try:
+
+                rss_source = getattr(
+                    entry,
+                    "source",
+                    None
+                )
+
+                if rss_source:
+
+                    rss_source_domain = (
+                        getattr(
+                            rss_source,
+                            "href",
+                            ""
+                        )
+                    )
+
+                    if rss_source_domain:
+
+                        rss_source_domain = (
+                            get_domain(
+                                rss_source_domain
+                            )
+                        )
+
+            except Exception:
+                pass
+
+            # -------------------------------------------------
+            # SOURCE CHECK
+            # -------------------------------------------------
+
+            if not source_domain_allowed(
+                source_name,
+                url,
+                rss_source_domain
+            ):
+
+                logger.info(
+                    "Rejected wrong source: %s | %s | rss=%s",
+                    source_name,
+                    url,
+                    rss_source_domain
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # LIVERPOOL CHECK
+            # -------------------------------------------------
+
+            if not appears_liverpool_related(
+                title,
+                summary
+            ):
+
+                logger.info(
+                    "Non-Liverpool skipped: %s",
+                    title
+                )
+
+                continue
+
+            image_url = get_article_image(
+                entry,
+                url
+            )
+
+            articles.append({
+                "title": title,
+                "url": url,
+                "summary": summary,
+                "source": source_name,
+                "image_url": image_url
+            })
+
+            logger.info(
+                "Trusted article accepted: %s",
+                title
+            )
+
+    logger.info(
+        "Collected %s trusted articles.",
+        len(articles)
+    )
+
+    return articles
+
+
+# =========================================================
+# AI SYSTEM PROMPT
+# =========================================================
+
+SYSTEM_PROMPT = """
+አንተ ለLiverpool FC የአማርኛ Telegram የዜና አርታኢ ነህ።
+
+የተሰጠህን መረጃ ብቻ ተጠቅመህ
+ተፈጥሯዊ፣ ግልጽ እና የስፖርት ዘገባ የሚመስል
+አማርኛ ዜና አዘጋጅ።
+
+ጥብቅ ህጎች፦
+
+1. ከarticle ውጭ እውነታ አትጨምር።
+2. Quote አትፍጠር።
+3. Transfer fee አትፍጠር።
+4. ቀን አትፍጠር።
+5. Injury አትፍጠር።
+6. Contract information አትፍጠር።
+7. Rumour/report ከሆነ እንደተረጋገጠ አታቅርብ።
+8. እርግጠኛ ያልሆነን መረጃ እርግጠኛ አታድርገው።
+9. Liverpool FC ላይ በግልጽ ካልሆነ REJECT።
+10. ተፈጥሯዊ የስፖርት አማርኛ ተጠቀም።
+11. ቃል በቃል አትተርጉም።
+12. English headline አትጻፍ።
+13. English paragraph አትጻፍ።
+14. Clickbait አትጠቀም።
+15. ተመሳሳይ ሀሳብ አትደግም።
+16. ዋናውን ነጥብ በግልጽ አማርኛ አቅርብ።
+17. የሰዎችን ስም በተቻለ መጠን ትክክል ጠብቅ።
+18. ምንም English sentence በheadline ወይም body ውስጥ አታስገባ።
+19. የarticle summary በጣም አጭር ከሆነ እውነታ አትጨምር።
+20. ዜናው የተረጋገጠ እንዳልሆነ ከሆነ በbody ውስጥ "ሪፖርት"፣ "ዘገባው እንደሚለው" ወይም ተመሳሳይ ቃል ተጠቀም።
+
+JSON ብቻ መልስ።
+
+Format:
+
+{
+  "decision": "POST" or "REJECT",
+  "category": "news/transfer/rumour/injury/match/other",
+  "headline": "አጭር የአማርኛ ርዕስ",
+  "body": "የአማርኛ ዜና",
+  "confidence": 0-100
+}
+"""
+
+
+# =========================================================
+# AI
+# =========================================================
+
+def ai_analyze(article):
+
+    prompt = f"""
+TRUSTED SOURCE:
+{article.get("source", "")}
+
+TITLE:
+{article.get("title", "")}
+
+ARTICLE SUMMARY:
+{article.get("summary", "")}
+
+Liverpool FC ላይ የተመሰረተ ዜና ከሆነ ብቻ POST አድርግ።
+
+የተሰጠውን መረጃ ብቻ ተጠቀም።
+ምንም አዲስ እውነታ አትጨምር።
+
+JSON only.
+"""
+
+    try:
+
+        completion = (
+            groq_client
+            .chat
+            .completions
+            .create(
+                model=GROQ_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=1000,
+                response_format={
+                    "type": "json_object"
+                }
+            )
+        )
+
+        content = (
+            completion
+            .choices[0]
+            .message
+            .content
+        )
+
+        return json.loads(
+            content
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "Groq error: %s",
+            e
+        )
+
+        return None
 # =========================================================
 # TELEGRAM API
 # =========================================================
@@ -1308,6 +2032,10 @@ def telegram_check_bot():
         )
     )
 
+    # -----------------------------------------------------
+    # Check channel access
+    # -----------------------------------------------------
+
     chat_data = telegram_api(
         "getChat",
         {
@@ -1342,6 +2070,10 @@ def telegram_check_bot():
             ""
         )
     )
+
+    # -----------------------------------------------------
+    # Check bot membership/admin
+    # -----------------------------------------------------
 
     bot_id = bot_info.get(
         "id"
@@ -1764,7 +2496,29 @@ def check_news():
 
                 posted_count += 1
 
-            time.sleep(2)
+                # -------------------------------------------------
+                # IMPORTANT:
+                # Wait 5 minutes before posting the NEXT news.
+                # -------------------------------------------------
+
+                if posted_count < 3:
+
+                    logger.info(
+                        "News posted. Waiting %s minutes before next news...",
+                        CHECK_INTERVAL_MINUTES
+                    )
+
+                    time.sleep(
+                        NEWS_POST_DELAY_SECONDS
+                    )
+
+            else:
+
+                # Rejected/duplicate article:
+                # Do NOT wait 5 minutes because nothing was posted.
+                logger.info(
+                    "Article was not posted. Checking next candidate."
+                )
 
         except Exception as e:
 
@@ -1966,627 +2720,3 @@ def match_score_text(
         f"{home_name} {home_score} - "
         f"{away_score} {away_name}"
     )
-
-
-# =========================================================
-# LIVE EVENTS
-# =========================================================
-
-def extract_live_events(event):
-
-    result = []
-
-    competitions = event.get(
-        "competitions",
-        []
-    )
-
-    if not competitions:
-        return result
-
-    details = competitions[0].get(
-        "details",
-        []
-    )
-
-    for detail in details:
-
-        athlete = detail.get(
-            "athlete",
-            {}
-        )
-
-        player = athlete.get(
-            "displayName",
-            ""
-        )
-
-        event_type = (
-            detail.get(
-                "type",
-                {}
-            ).get(
-                "text",
-                ""
-            ).lower()
-        )
-
-        clock = detail.get(
-            "clock",
-            {}
-        )
-
-        minute = (
-            clock.get(
-                "displayValue",
-                ""
-            )
-            or str(
-                clock.get(
-                    "value",
-                    ""
-                )
-            )
-        )
-
-        team_id = str(
-            detail.get(
-                "team",
-                {}
-            ).get(
-                "id",
-                ""
-            )
-        )
-
-        if team_id != LIVERPOOL_TEAM_ID:
-            continue
-
-        if "goal" in event_type:
-
-            result.append({
-                "type": "goal",
-                "player": player,
-                "minute": minute
-            })
-
-        elif "yellow" in event_type:
-
-            result.append({
-                "type": "yellow",
-                "player": player,
-                "minute": minute
-            })
-
-        elif "red" in event_type:
-
-            result.append({
-                "type": "red",
-                "player": player,
-                "minute": minute
-            })
-
-        elif (
-            "substitution" in event_type
-            or "substitute" in event_type
-        ):
-
-            result.append({
-                "type": "substitution",
-                "player": player,
-                "minute": minute
-            })
-
-    return result
-
-
-# =========================================================
-# LIVE MESSAGE
-# =========================================================
-
-def build_live_message(
-    event,
-    event_type,
-    extra_text=""
-):
-
-    home, away = get_match_teams(
-        event
-    )
-
-    score = match_score_text(
-        home,
-        away
-    )
-
-    _, name, detail = get_match_status(
-        event
-    )
-
-    if event_type == "start":
-
-        return (
-            "🔴 <b>የጨዋታ መጀመሪያ</b>\n\n"
-            f"⚽ {escape_html(score)}\n\n"
-            f"▶️ {escape_html(detail or name)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    if event_type == "goal":
-
-        return (
-            "⚽ <b>ጎል!</b>\n\n"
-            f"{escape_html(extra_text)}\n\n"
-            f"⚽ {escape_html(score)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    if event_type == "yellow":
-
-        return (
-            "🟨 <b>ቢጫ ካርድ</b>\n\n"
-            f"{escape_html(extra_text)}\n\n"
-            f"{escape_html(score)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    if event_type == "red":
-
-        return (
-            "🟥 <b>ቀይ ካርድ</b>\n\n"
-            f"{escape_html(extra_text)}\n\n"
-            f"{escape_html(score)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    if event_type == "substitution":
-
-        return (
-            "🔄 <b>ቅያሬ</b>\n\n"
-            f"{escape_html(extra_text)}\n\n"
-            f"{escape_html(score)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    if event_type == "halftime":
-
-        return (
-            "⏸️ <b>እረፍት</b>\n\n"
-            f"⚽ {escape_html(score)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    if event_type == "fulltime":
-
-        return (
-            "🏁 <b>ጨዋታው ተጠናቋል</b>\n\n"
-            f"⚽ {escape_html(score)}\n\n"
-            "<b>@yegnaLiverpool</b>"
-        )
-
-    return (
-        "⚽ <b>LIVE</b>\n\n"
-        f"⚽ {escape_html(score)}\n\n"
-        f"{escape_html(extra_text)}\n\n"
-        "<b>@yegnaLiverpool</b>"
-    )
-
-
-# =========================================================
-# LIVE MATCH
-# =========================================================
-
-def process_live_match():
-
-    logger.info(
-        "Checking Liverpool LIVE match..."
-    )
-
-    data = get_liverpool_scoreboard()
-
-    if not data:
-        return
-
-    event = find_liverpool_match(
-        data
-    )
-
-    if not event:
-
-        logger.info(
-            "No Liverpool match found."
-        )
-
-        return
-
-    event_id = str(
-        event.get(
-            "id",
-            ""
-        )
-    )
-
-    state, name, detail = get_match_status(
-        event
-    )
-
-    home, away = get_match_teams(
-        event
-    )
-
-    logger.info(
-        "Liverpool match: %s | state=%s",
-        match_score_text(
-            home,
-            away
-        ),
-        state
-    )
-
-    # -----------------------------------------------------
-    # PRE
-    # -----------------------------------------------------
-
-    if state == "pre":
-
-        key = (
-            f"{event_id}|pre"
-        )
-
-        if not live_event_already_posted(
-            key
-        ):
-
-            message = build_live_message(
-                event,
-                "start",
-                "የLiverpool ጨዋታ ሊጀምር ነው።"
-            )
-
-            if telegram_send_message(
-                message
-            ):
-
-                save_live_event(
-                    key,
-                    "pre",
-                    message
-                )
-
-        return
-
-    # -----------------------------------------------------
-    # LIVE
-    # -----------------------------------------------------
-
-    if state == "in":
-
-        for item in extract_live_events(
-            event
-        ):
-
-            event_key = (
-                f"{event_id}|"
-                f"{item['type']}|"
-                f"{item.get('player','')}|"
-                f"{item.get('minute','')}"
-            )
-
-            if live_event_already_posted(
-                event_key
-            ):
-                continue
-
-            player = item.get(
-                "player",
-                ""
-            )
-
-            minute = item.get(
-                "minute",
-                ""
-            )
-
-            if item["type"] == "goal":
-
-                extra = (
-                    f"⚽ {player} "
-                    f"በ{minute}' ጎል አስቆጠረ።"
-                )
-
-            elif item["type"] == "yellow":
-
-                extra = (
-                    f"🟨 {player} "
-                    f"በ{minute}' ቢጫ ካርድ ተመልክቷል።"
-                )
-
-            elif item["type"] == "red":
-
-                extra = (
-                    f"🟥 {player} "
-                    f"በ{minute}' ቀይ ካርድ ተመልክቷል።"
-                )
-
-            else:
-
-                extra = (
-                    f"🔄 {player} "
-                    f"በ{minute}' ቅያሬ ተደርጓል።"
-                )
-
-            message = build_live_message(
-                event,
-                item["type"],
-                extra
-            )
-
-            if telegram_send_message(
-                message
-            ):
-
-                save_live_event(
-                    event_key,
-                    item["type"],
-                    message
-                )
-
-        # -------------------------------------------------
-        # CLOCK
-        # -------------------------------------------------
-
-        status = event.get(
-            "status",
-            {}
-        )
-
-        clock = status.get(
-            "displayClock",
-            ""
-        )
-
-        if clock:
-
-            key = (
-                f"{event_id}|clock|{clock}"
-            )
-
-            if not live_event_already_posted(
-                key
-            ):
-
-                message = build_live_message(
-                    event,
-                    "live",
-                    f"⏱️ የጨዋታ ሰዓት፦ {clock}"
-                )
-
-                if telegram_send_message(
-                    message
-                ):
-
-                    save_live_event(
-                        key,
-                        "clock",
-                        message
-                    )
-
-        return
-
-    # -----------------------------------------------------
-    # FULL TIME
-    # -----------------------------------------------------
-
-    if state == "post":
-
-        key = (
-            f"{event_id}|fulltime"
-        )
-
-        if not live_event_already_posted(
-            key
-        ):
-
-            message = build_live_message(
-                event,
-                "fulltime"
-            )
-
-            if telegram_send_message(
-                message
-            ):
-
-                save_live_event(
-                    key,
-                    "fulltime",
-                    message
-                )
-
-
-# =========================================================
-# ONE COMPLETE CHECK
-# =========================================================
-
-def run_bot_cycle():
-
-    logger.info(
-        "===================================="
-    )
-
-    logger.info(
-        "Starting new bot cycle..."
-    )
-
-    # -----------------------------------------------------
-    # TELEGRAM CONNECTION
-    # -----------------------------------------------------
-
-    if not telegram_check_bot():
-
-        logger.error(
-            "Telegram access check FAILED."
-        )
-
-        return
-
-    logger.info(
-        "Telegram channel access OK."
-    )
-
-    # -----------------------------------------------------
-    # NEWS
-    # -----------------------------------------------------
-
-    try:
-
-        check_news()
-
-    except Exception as e:
-
-        logger.exception(
-            "News check failed: %s",
-            e
-        )
-
-    # -----------------------------------------------------
-    # LIVE
-    # -----------------------------------------------------
-
-    try:
-
-        process_live_match()
-
-    except Exception as e:
-
-        logger.exception(
-            "LIVE check failed: %s",
-            e
-        )
-
-    logger.info(
-        "Bot cycle finished."
-    )
-
-    logger.info(
-        "Next check in %s minutes.",
-        CHECK_INTERVAL_MINUTES
-    )
-
-    logger.info(
-        "===================================="
-    )
-
-
-# =========================================================
-# MAIN LOOP
-# =========================================================
-
-def main():
-
-    logger.info(
-        "===================================="
-    )
-
-    logger.info(
-        "Liverpool News Bot starting..."
-    )
-
-    logger.info(
-        "Channel: %s",
-        CHANNEL_ID
-    )
-
-    logger.info(
-        "Mode: DIRECT TELEGRAM API"
-    )
-
-    logger.info(
-        "News sources: 5 trusted sources only"
-    )
-
-    logger.info(
-        "Check interval: %s minutes",
-        CHECK_INTERVAL_MINUTES
-    )
-
-    # -----------------------------------------------------
-    # RUN FOREVER
-    # -----------------------------------------------------
-
-    while True:
-
-        cycle_started = time.time()
-
-        try:
-
-            run_bot_cycle()
-
-        except Exception as e:
-
-            logger.exception(
-                "Unexpected bot cycle error: %s",
-                e
-            )
-
-        # -------------------------------------------------
-        # CALCULATE REMAINING WAIT TIME
-        # -------------------------------------------------
-
-        elapsed = (
-            time.time()
-            - cycle_started
-        )
-
-        interval_seconds = (
-            CHECK_INTERVAL_MINUTES
-            * 60
-        )
-
-        remaining = max(
-            5,
-            interval_seconds - elapsed
-        )
-
-        logger.info(
-            "Sleeping for %s seconds...",
-            int(remaining)
-        )
-
-        try:
-
-            time.sleep(
-                remaining
-            )
-
-        except KeyboardInterrupt:
-
-            logger.info(
-                "Bot stopped by user."
-            )
-
-            break
-
-
-# =========================================================
-# START
-# =========================================================
-
-if __name__ == "__main__":
-
-    try:
-
-        main()
-
-    except KeyboardInterrupt:
-
-        logger.info(
-            "Liverpool News Bot stopped."
-        )
-
-    finally:
-
-        try:
-            db.close()
-        except Exception:
-            pass
-
