@@ -22,7 +22,12 @@ from groq import Groq
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+
+GROQ_API_KEY = os.getenv(
+    "GROQ_API_KEY",
+    ""
+).strip()
+
 CHANNEL_ID = os.getenv(
     "CHANNEL_ID",
     "@yegnaLiverpool"
@@ -34,11 +39,17 @@ GROQ_MODEL = os.getenv(
 ).strip()
 
 MAX_NEWS_AGE_HOURS = int(
-    os.getenv("MAX_NEWS_AGE_HOURS", "24")
+    os.getenv(
+        "MAX_NEWS_AGE_HOURS",
+        "24"
+    )
 )
 
 CHECK_INTERVAL_MINUTES = int(
-    os.getenv("CHECK_INTERVAL_MINUTES", "5")
+    os.getenv(
+        "CHECK_INTERVAL_MINUTES",
+        "5"
+    )
 )
 
 LIVERPOOL_TEAM_ID = "364"
@@ -155,7 +166,13 @@ HEADERS = {
         "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
         "Chrome/150.0 Mobile Safari/537.36"
-    )
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,image/avif,"
+        "image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9"
 }
 
 
@@ -164,6 +181,7 @@ HEADERS = {
 # =========================================================
 
 def clean_text(text):
+
     if not text:
         return ""
 
@@ -185,6 +203,7 @@ def clean_text(text):
 
 
 def escape_html(text):
+
     if not text:
         return ""
 
@@ -197,6 +216,7 @@ def escape_html(text):
 
 
 def make_fingerprint(title, url):
+
     raw = (
         clean_text(title).lower()
         + "|"
@@ -209,6 +229,7 @@ def make_fingerprint(title, url):
 
 
 def already_posted(fingerprint):
+
     row = db.execute(
         """
         SELECT 1
@@ -228,6 +249,7 @@ def save_posted(
     url,
     source
 ):
+
     db.execute(
         """
         INSERT OR IGNORE INTO posted_news
@@ -253,6 +275,7 @@ def save_posted(
 # =========================================================
 
 def live_event_already_posted(event_key):
+
     row = db.execute(
         """
         SELECT 1
@@ -271,6 +294,7 @@ def save_live_event(
     event_type,
     event_text
 ):
+
     db.execute(
         """
         INSERT OR IGNORE INTO live_events
@@ -295,11 +319,17 @@ def save_live_event(
 # =========================================================
 
 def parse_entry_time(entry):
+
     try:
+
         if (
-            hasattr(entry, "published_parsed")
+            hasattr(
+                entry,
+                "published_parsed"
+            )
             and entry.published_parsed
         ):
+
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.published_parsed
@@ -308,9 +338,13 @@ def parse_entry_time(entry):
             )
 
         if (
-            hasattr(entry, "updated_parsed")
+            hasattr(
+                entry,
+                "updated_parsed"
+            )
             and entry.updated_parsed
         ):
+
             return datetime.fromtimestamp(
                 time.mktime(
                     entry.updated_parsed
@@ -319,6 +353,7 @@ def parse_entry_time(entry):
             )
 
     except Exception as e:
+
         logger.warning(
             "Date parsing error: %s",
             e
@@ -328,12 +363,17 @@ def parse_entry_time(entry):
 
 
 def is_recent(entry):
-    published = parse_entry_time(entry)
+
+    published = parse_entry_time(
+        entry
+    )
 
     if not published:
         return True
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(
+        timezone.utc
+    )
 
     age = (
         now - published
@@ -349,7 +389,10 @@ def is_recent(entry):
 # =========================================================
 
 def google_news_rss(query):
-    encoded = quote_plus(query)
+
+    encoded = quote_plus(
+        query
+    )
 
     return (
         "https://news.google.com/rss/search?"
@@ -361,8 +404,12 @@ def google_news_rss(query):
 
 
 def get_google_news(query):
+
     try:
-        url = google_news_rss(query)
+
+        url = google_news_rss(
+            query
+        )
 
         response = requests.get(
             url,
@@ -377,6 +424,7 @@ def get_google_news(query):
         )
 
     except Exception as e:
+
         logger.error(
             "Google News error: %s",
             e
@@ -386,11 +434,70 @@ def get_google_news(query):
 
 
 # =========================================================
+# URL RESOLVER
+# =========================================================
+
+def resolve_article_url(url):
+
+    if not url:
+        return ""
+
+    try:
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20,
+            allow_redirects=True
+        )
+
+        final_url = response.url
+
+        if final_url:
+            logger.info(
+                "Resolved URL: %s",
+                final_url
+            )
+
+            return final_url
+
+    except Exception as e:
+
+        logger.warning(
+            "URL resolve failed: %s",
+            e
+        )
+
+    return url
+
+
+# =========================================================
 # IMAGE HELPERS
 # =========================================================
 
+def is_valid_image_url(url):
+
+    if not url:
+        return False
+
+    url = str(url).strip()
+
+    if not url.startswith(
+        ("http://", "https://")
+    ):
+        return False
+
+    return True
+
+
 def get_feed_image(entry):
+
+    # -----------------------------------------------------
+    # media_content
+    # -----------------------------------------------------
+
     try:
+
         media_content = getattr(
             entry,
             "media_content",
@@ -398,18 +505,31 @@ def get_feed_image(entry):
         )
 
         for media in media_content:
+
             image_url = media.get(
                 "url",
                 ""
             )
 
-            if image_url:
+            if is_valid_image_url(
+                image_url
+            ):
+
+                logger.info(
+                    "Image found in media_content"
+                )
+
                 return image_url
 
     except Exception:
         pass
 
+    # -----------------------------------------------------
+    # media_thumbnail
+    # -----------------------------------------------------
+
     try:
+
         media_thumbnail = getattr(
             entry,
             "media_thumbnail",
@@ -417,18 +537,31 @@ def get_feed_image(entry):
         )
 
         for media in media_thumbnail:
+
             image_url = media.get(
                 "url",
                 ""
             )
 
-            if image_url:
+            if is_valid_image_url(
+                image_url
+            ):
+
+                logger.info(
+                    "Image found in media_thumbnail"
+                )
+
                 return image_url
 
     except Exception:
         pass
 
+    # -----------------------------------------------------
+    # enclosures
+    # -----------------------------------------------------
+
     try:
+
         enclosures = getattr(
             entry,
             "enclosures",
@@ -436,18 +569,38 @@ def get_feed_image(entry):
         )
 
         for enclosure in enclosures:
+
             image_url = enclosure.get(
                 "href",
                 ""
             )
 
-            if image_url:
+            if not image_url:
+
+                image_url = enclosure.get(
+                    "url",
+                    ""
+                )
+
+            if is_valid_image_url(
+                image_url
+            ):
+
+                logger.info(
+                    "Image found in enclosure"
+                )
+
                 return image_url
 
     except Exception:
         pass
 
+    # -----------------------------------------------------
+    # summary image
+    # -----------------------------------------------------
+
     try:
+
         summary = getattr(
             entry,
             "summary",
@@ -459,15 +612,32 @@ def get_feed_image(entry):
             "html.parser"
         )
 
-        image = soup.find("img")
+        image = soup.find(
+            "img"
+        )
 
         if image:
+
             image_url = image.get(
                 "src",
                 ""
             )
 
-            if image_url:
+            if not image_url:
+
+                image_url = image.get(
+                    "data-src",
+                    ""
+                )
+
+            if is_valid_image_url(
+                image_url
+            ):
+
+                logger.info(
+                    "Image found in RSS HTML"
+                )
+
                 return image_url
 
     except Exception:
@@ -477,14 +647,21 @@ def get_feed_image(entry):
 
 
 def get_page_image(url):
+
     if not url:
         return ""
 
     try:
+
+        actual_url = resolve_article_url(
+            url
+        )
+
         response = requests.get(
-            url,
+            actual_url,
             headers=HEADERS,
-            timeout=20
+            timeout=20,
+            allow_redirects=True
         )
 
         response.raise_for_status()
@@ -494,19 +671,33 @@ def get_page_image(url):
             "html.parser"
         )
 
+        # -------------------------------------------------
+        # og:image
+        # -------------------------------------------------
+
         og_image = soup.find(
             "meta",
             property="og:image"
         )
 
         if og_image:
+
             image_url = og_image.get(
                 "content",
                 ""
             )
 
             if image_url:
+
+                logger.info(
+                    "Image found from og:image"
+                )
+
                 return image_url
+
+        # -------------------------------------------------
+        # twitter:image
+        # -------------------------------------------------
 
         twitter_image = soup.find(
             "meta",
@@ -516,15 +707,48 @@ def get_page_image(url):
         )
 
         if twitter_image:
+
             image_url = twitter_image.get(
                 "content",
                 ""
             )
 
             if image_url:
+
+                logger.info(
+                    "Image found from twitter:image"
+                )
+
+                return image_url
+
+        # -------------------------------------------------
+        # twitter:image:src
+        # -------------------------------------------------
+
+        twitter_image = soup.find(
+            "meta",
+            attrs={
+                "name": "twitter:image:src"
+            }
+        )
+
+        if twitter_image:
+
+            image_url = twitter_image.get(
+                "content",
+                ""
+            )
+
+            if image_url:
+
+                logger.info(
+                    "Image found from twitter:image:src"
+                )
+
                 return image_url
 
     except Exception as e:
+
         logger.warning(
             "Could not get page image: %s",
             e
@@ -534,12 +758,162 @@ def get_page_image(url):
 
 
 def get_article_image(entry, url):
-    image_url = get_feed_image(entry)
+
+    # -----------------------------------------------------
+    # 1. RSS image
+    # -----------------------------------------------------
+
+    image_url = get_feed_image(
+        entry
+    )
 
     if image_url:
+
         return image_url
 
-    return get_page_image(url)
+    # -----------------------------------------------------
+    # 2. Article page image
+    # -----------------------------------------------------
+
+    image_url = get_page_image(
+        url
+    )
+
+    if image_url:
+
+        return image_url
+
+    return ""
+
+
+# =========================================================
+# DOWNLOAD IMAGE
+# =========================================================
+
+def download_image(image_url):
+
+    if not is_valid_image_url(
+        image_url
+    ):
+        return None, None
+
+    try:
+
+        logger.info(
+            "Downloading image: %s",
+            image_url
+        )
+
+        response = requests.get(
+            image_url,
+            headers=HEADERS,
+            timeout=30,
+            allow_redirects=True
+        )
+
+        response.raise_for_status()
+
+        content_type = (
+            response.headers
+            .get(
+                "Content-Type",
+                ""
+            )
+            .lower()
+        )
+
+        content = response.content
+
+        if not content:
+
+            logger.warning(
+                "Image response is empty."
+            )
+
+            return None, None
+
+        # -------------------------------------------------
+        # Validate image
+        # -------------------------------------------------
+
+        valid_types = (
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+            "image/webp",
+            "image/gif"
+        )
+
+        if not any(
+            x in content_type
+            for x in valid_types
+        ):
+
+            # Sometimes servers don't return
+            # correct content-type.
+            # Check actual file signatures.
+
+            if not (
+                content.startswith(b"\xff\xd8\xff")
+                or content.startswith(b"\x89PNG")
+                or content.startswith(b"RIFF")
+                or content.startswith(b"GIF8")
+            ):
+
+                logger.warning(
+                    "Downloaded URL is not a valid image. "
+                    "Content-Type=%s",
+                    content_type
+                )
+
+                return None, None
+
+        # -------------------------------------------------
+        # Size protection
+        # -------------------------------------------------
+
+        max_size = 10 * 1024 * 1024
+
+        if len(content) > max_size:
+
+            logger.warning(
+                "Image too large: %s bytes",
+                len(content)
+            )
+
+            return None, None
+
+        # -------------------------------------------------
+        # Filename
+        # -------------------------------------------------
+
+        if "png" in content_type:
+            filename = "liverpool_news.png"
+
+        elif "webp" in content_type:
+            filename = "liverpool_news.webp"
+
+        elif "gif" in content_type:
+            filename = "liverpool_news.gif"
+
+        else:
+            filename = "liverpool_news.jpg"
+
+        logger.info(
+            "Image downloaded successfully: %s bytes",
+            len(content)
+        )
+
+        return content, filename
+
+    except Exception as e:
+
+        logger.warning(
+            "Image download failed: %s",
+            e
+        )
+
+        return None, None
 
 
 # =========================================================
@@ -547,6 +921,7 @@ def get_article_image(entry, url):
 # =========================================================
 
 def collect_news():
+
     articles = []
 
     # -----------------------------------------------------
@@ -558,6 +933,7 @@ def collect_news():
     )
 
     if official_feed:
+
         for entry in official_feed.entries[:10]:
 
             if not is_recent(entry):
@@ -626,7 +1002,9 @@ def collect_news():
 
     for source_name, query in journalist_queries:
 
-        feed = get_google_news(query)
+        feed = get_google_news(
+            query
+        )
 
         if not feed:
             continue
@@ -700,6 +1078,7 @@ def appears_liverpool_related(
     title,
     summary
 ):
+
     text = (
         title
         + " "
@@ -918,6 +1297,27 @@ def telegram_send_photo(
 ):
 
     if not image_url:
+
+        logger.warning(
+            "No image URL provided."
+        )
+
+        return False
+
+    # -----------------------------------------------------
+    # DOWNLOAD IMAGE FIRST
+    # -----------------------------------------------------
+
+    image_data, filename = download_image(
+        image_url
+    )
+
+    if not image_data:
+
+        logger.warning(
+            "Could not download image."
+        )
+
         return False
 
     url = (
@@ -925,9 +1325,20 @@ def telegram_send_photo(
         f"{BOT_TOKEN}/sendPhoto"
     )
 
-    payload = {
+    # -----------------------------------------------------
+    # Multipart upload
+    # -----------------------------------------------------
+
+    files = {
+        "photo": (
+            filename,
+            image_data,
+            "application/octet-stream"
+        )
+    }
+
+    data = {
         "chat_id": CHANNEL_ID,
-        "photo": image_url,
         "caption": caption,
         "parse_mode": "HTML"
     }
@@ -936,8 +1347,9 @@ def telegram_send_photo(
 
         response = requests.post(
             url,
-            json=payload,
-            timeout=30
+            data=data,
+            files=files,
+            timeout=60
         )
 
         if response.status_code != 200:
@@ -949,16 +1361,20 @@ def telegram_send_photo(
 
             return False
 
-        data = response.json()
+        result = response.json()
 
-        if not data.get("ok"):
+        if not result.get("ok"):
 
             logger.error(
                 "Telegram rejected photo: %s",
-                data
+                result
             )
 
             return False
+
+        logger.info(
+            "PHOTO SENT SUCCESSFULLY"
+        )
 
         return True
 
@@ -993,6 +1409,7 @@ def build_telegram_message(result):
     )
 
     if not headline or not body:
+
         return None
 
     headline = escape_html(
@@ -1037,6 +1454,7 @@ def process_article(article):
     )
 
     if not title or not url:
+
         return False
 
     # -----------------------------------------------------
@@ -1124,6 +1542,7 @@ def process_article(article):
     )
 
     if decision != "POST":
+
         return False
 
     if confidence < 75:
@@ -1144,13 +1563,18 @@ def process_article(article):
     )
 
     if not message:
+
         return False
 
     # -----------------------------------------------------
-    # PHOTO FIRST
+    # IMAGE
     # -----------------------------------------------------
 
     if image_url:
+
+        logger.info(
+            "Trying article image..."
+        )
 
         sent = telegram_send_photo(
             image_url,
@@ -1177,8 +1601,49 @@ def process_article(article):
             return True
 
         logger.warning(
-            "Image failed. Trying text post..."
+            "First image failed."
         )
+
+        # -------------------------------------------------
+        # SECOND IMAGE ATTEMPT
+        # -------------------------------------------------
+
+        logger.info(
+            "Trying article page image fallback..."
+        )
+
+        fallback_image = get_page_image(
+            url
+        )
+
+        if (
+            fallback_image
+            and fallback_image != image_url
+        ):
+
+            sent = telegram_send_photo(
+                fallback_image,
+                message
+            )
+
+            if sent:
+
+                save_posted(
+                    fingerprint,
+                    title,
+                    url,
+                    article.get(
+                        "source",
+                        ""
+                    )
+                )
+
+                logger.info(
+                    "POSTED WITH FALLBACK IMAGE: %s",
+                    title
+                )
+
+                return True
 
     # -----------------------------------------------------
     # TEXT FALLBACK
@@ -1250,6 +1715,7 @@ def check_news():
             )
 
             if posted:
+
                 posted_count += 1
 
             time.sleep(2)
@@ -1311,6 +1777,7 @@ def get_liverpool_scoreboard():
 def find_liverpool_match(data):
 
     if not data:
+
         return None
 
     events = data.get(
@@ -1399,6 +1866,7 @@ def get_match_teams(event):
     )
 
     if not competitions:
+
         return None, None
 
     competitors = competitions[0].get(
@@ -1436,6 +1904,7 @@ def match_score_text(
 ):
 
     if not home or not away:
+
         return ""
 
     home_name = home.get(
@@ -1484,6 +1953,7 @@ def extract_live_events(event):
     )
 
     if not competitions:
+
         return result
 
     competition = competitions[0]
@@ -1552,6 +2022,7 @@ def extract_live_events(event):
         )
 
         if team_id != LIVERPOOL_TEAM_ID:
+
             continue
 
         if "goal" in event_type:
@@ -1799,6 +2270,7 @@ def process_live_match():
             if live_event_already_posted(
                 event_key
             ):
+
                 continue
 
             player = item.get(
@@ -2005,4 +2477,5 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
+
     main()
