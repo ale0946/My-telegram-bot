@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import json
@@ -38,6 +39,7 @@ MAX_NEWS_AGE_HOURS = int(
     os.getenv("MAX_NEWS_AGE_HOURS", "24")
 )
 
+# Bot checks for new news every 5 minutes
 CHECK_INTERVAL_MINUTES = int(
     os.getenv("CHECK_INTERVAL_MINUTES", "5")
 )
@@ -117,6 +119,7 @@ db.commit()
 
 # =========================================================
 # TRUSTED SOURCES
+# ONLY THESE 5 SOURCES ARE ALLOWED
 # =========================================================
 
 TRUSTED_SOURCES = {
@@ -132,10 +135,8 @@ TRUSTED_SOURCES = {
     "James Pearce": [
         "theathletic.com"
     ],
-    "Fabrizio Romano": [
-        "x.com",
-        "twitter.com",
-        "fabricioromano.com"
+    "David Lynch": [
+        "davidlynchlfc.co.uk"
     ],
 }
 
@@ -462,7 +463,7 @@ def is_recent(entry):
 
 
 # =========================================================
-# GOOGLE NEWS
+# GOOGLE NEWS RSS
 # =========================================================
 
 def google_news_rss(query):
@@ -593,8 +594,11 @@ def source_domain_allowed(
         []
     )
 
+    if not allowed:
+        return False
+
     # -----------------------------------------------------
-    # First: RSS source domain
+    # 1. RSS SOURCE DOMAIN
     # -----------------------------------------------------
 
     if rss_source_domain:
@@ -606,7 +610,7 @@ def source_domain_allowed(
             return True
 
     # -----------------------------------------------------
-    # Second: original URL
+    # 2. ORIGINAL URL
     # -----------------------------------------------------
 
     original_domain = get_domain(
@@ -620,7 +624,7 @@ def source_domain_allowed(
         return True
 
     # -----------------------------------------------------
-    # Third: resolved URL
+    # 3. RESOLVED URL
     # -----------------------------------------------------
 
     resolved = resolve_article_url(
@@ -916,27 +920,19 @@ def download_image(image_url):
 
         if "png" in content_type:
 
-            filename = (
-                "liverpool_news.png"
-            )
+            filename = "liverpool_news.png"
 
         elif "webp" in content_type:
 
-            filename = (
-                "liverpool_news.webp"
-            )
+            filename = "liverpool_news.webp"
 
         elif "gif" in content_type:
 
-            filename = (
-                "liverpool_news.gif"
-            )
+            filename = "liverpool_news.gif"
 
         else:
 
-            filename = (
-                "liverpool_news.jpg"
-            )
+            filename = "liverpool_news.jpg"
 
         return content, filename
 
@@ -952,6 +948,7 @@ def download_image(image_url):
 
 # =========================================================
 # NEWS COLLECTION
+# ONLY 5 TRUSTED SOURCES
 # =========================================================
 
 def collect_news():
@@ -976,15 +973,15 @@ def collect_news():
             '"James Pearce" Liverpool'
         ),
         (
-            "Fabrizio Romano",
-            '"Fabrizio Romano" Liverpool'
+            "David Lynch",
+            '"David Lynch" Liverpool'
         )
     ]
 
     for source_name, query in queries:
 
         logger.info(
-            "Searching: %s",
+            "Searching trusted source: %s",
             source_name
         )
 
@@ -1057,20 +1054,16 @@ def collect_news():
 
                 if rss_source:
 
-                    rss_source_domain = (
-                        getattr(
-                            rss_source,
-                            "href",
-                            ""
-                        )
+                    rss_source_href = getattr(
+                        rss_source,
+                        "href",
+                        ""
                     )
 
-                    if rss_source_domain:
+                    if rss_source_href:
 
-                        rss_source_domain = (
-                            get_domain(
-                                rss_source_domain
-                            )
+                        rss_source_domain = get_domain(
+                            rss_source_href
                         )
 
             except Exception:
@@ -1201,6 +1194,13 @@ SYSTEM_PROMPT = """
 18. ምንም English sentence በheadline ወይም body ውስጥ አታስገባ።
 19. የarticle summary በጣም አጭር ከሆነ እውነታ አትጨምር።
 20. ዜናው የተረጋገጠ እንዳልሆነ ከሆነ በbody ውስጥ "ሪፖርት"፣ "ዘገባው እንደሚለው" ወይም ተመሳሳይ ቃል ተጠቀም።
+21. የተሰጠው ጽሑፍ የተበላሸ ወይም ትርጉሙ ግልጽ ካልሆነ REJECT አድርግ።
+22. የሰው፣ የክለብ፣ የቦታ ወይም የድርጅት ስም ትርጉም አታድርግ።
+23. የarticle ዋና ሀሳብ ግልጽ ካልሆነ ዜና አታመንጭ።
+24. የተሰጠውን መረጃ በመድገም ብቻ የተፈጠረ ዜና አትስራ።
+25. የምንጩ ዘገባ ከሆነ ምንጩን እንደ እውነታ አታቅርብ።
+26. አማርኛው የተፈጥሮ የስፖርት ዘገባ እንዲመስል አድርግ።
+27. ቃል በቃል ከመተርጎም ይልቅ የእንግሊዝኛውን ሀሳብ በትክክለኛ አማርኛ ግልጽ አድርግ።
 
 JSON ብቻ መልስ።
 
@@ -1236,6 +1236,10 @@ Liverpool FC ላይ የተመሰረተ ዜና ከሆነ ብቻ POST አድርግ
 
 የተሰጠውን መረጃ ብቻ ተጠቀም።
 ምንም አዲስ እውነታ አትጨምር።
+
+አማርኛው ተፈጥሯዊ የስፖርት ዘገባ እንዲመስል አድርግ።
+ቃል በቃል አትተርጉም።
+ትርጉሙ ግልጽ ካልሆነ REJECT አድርግ።
 
 JSON only.
 """
@@ -1381,11 +1385,6 @@ def telegram_check_bot():
         )
     )
 
-    # -----------------------------------------------------
-    # IMPORTANT:
-    # Check channel access
-    # -----------------------------------------------------
-
     chat_data = telegram_api(
         "getChat",
         {
@@ -1420,10 +1419,6 @@ def telegram_check_bot():
             ""
         )
     )
-
-    # -----------------------------------------------------
-    # Check bot membership/admin
-    # -----------------------------------------------------
 
     bot_id = bot_info.get(
         "id"
@@ -2486,26 +2481,17 @@ def process_live_match():
 
 
 # =========================================================
-# MAIN
+# ONE COMPLETE CHECK
 # =========================================================
 
-def main():
+def run_bot_cycle():
 
     logger.info(
         "===================================="
     )
 
     logger.info(
-        "Liverpool News Bot starting..."
-    )
-
-    logger.info(
-        "Channel: %s",
-        CHANNEL_ID
-    )
-
-    logger.info(
-        "Mode: DIRECT TELEGRAM API"
+        "Starting new bot cycle..."
     )
 
     # -----------------------------------------------------
@@ -2555,7 +2541,12 @@ def main():
         )
 
     logger.info(
-        "Bot check finished."
+        "Bot cycle finished."
+    )
+
+    logger.info(
+        "Next check in %s minutes.",
+        CHECK_INTERVAL_MINUTES
     )
 
     logger.info(
@@ -2564,9 +2555,115 @@ def main():
 
 
 # =========================================================
+# MAIN LOOP
+# =========================================================
+
+def main():
+
+    logger.info(
+        "===================================="
+    )
+
+    logger.info(
+        "Liverpool News Bot starting..."
+    )
+
+    logger.info(
+        "Channel: %s",
+        CHANNEL_ID
+    )
+
+    logger.info(
+        "Mode: DIRECT TELEGRAM API"
+    )
+
+    logger.info(
+        "News sources: 5 trusted sources only"
+    )
+
+    logger.info(
+        "Check interval: %s minutes",
+        CHECK_INTERVAL_MINUTES
+    )
+
+    # -----------------------------------------------------
+    # RUN FOREVER
+    # -----------------------------------------------------
+
+    while True:
+
+        cycle_started = time.time()
+
+        try:
+
+            run_bot_cycle()
+
+        except Exception as e:
+
+            logger.exception(
+                "Unexpected bot cycle error: %s",
+                e
+            )
+
+        # -------------------------------------------------
+        # CALCULATE REMAINING WAIT TIME
+        # -------------------------------------------------
+
+        elapsed = (
+            time.time()
+            - cycle_started
+        )
+
+        interval_seconds = (
+            CHECK_INTERVAL_MINUTES
+            * 60
+        )
+
+        remaining = max(
+            5,
+            interval_seconds - elapsed
+        )
+
+        logger.info(
+            "Sleeping for %s seconds...",
+            int(remaining)
+        )
+
+        try:
+
+            time.sleep(
+                remaining
+            )
+
+        except KeyboardInterrupt:
+
+            logger.info(
+                "Bot stopped by user."
+            )
+
+            break
+
+
+# =========================================================
 # START
 # =========================================================
 
 if __name__ == "__main__":
 
-    main()
+    try:
+
+        main()
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "Liverpool News Bot stopped."
+        )
+
+    finally:
+
+        try:
+            db.close()
+        except Exception:
+            pass
+```
