@@ -1,6 +1,5 @@
-python-telegram-bot[job-queue]
-groq
 feedparser
 requests
-python-dotenv
 beautifulsoup4
+python-dotenv
+groq
