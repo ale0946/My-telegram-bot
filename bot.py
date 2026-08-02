@@ -1,8 +1,10 @@
+```python
 import os
 import json
 import hashlib
 import asyncio
 import aiohttp
+import tempfile
 
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
@@ -16,6 +18,7 @@ from telegram.ext import (
 
 load_dotenv()
 
+
 # =========================================================
 # CONFIG
 # =========================================================
@@ -23,23 +26,43 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY")
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+try:
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+except ValueError:
+    ADMIN_ID = 0
 
 TARGET_CHANNEL = "@yegnaLiverpool"
 
-# Telegram source channels
+
+# =========================================================
+# TELEGRAM SOURCE CHANNELS
+# =========================================================
+
 SOURCE_CHANNELS = [
     x.strip()
     for x in os.getenv("SOURCE_CHANNELS", "").split(",")
     if x.strip()
 ]
 
-# These are needed ONLY for reading source Telegram channels
-API_ID = int(os.getenv("API_ID", "0"))
+
+# =========================================================
+# TELEGRAM API
+# =========================================================
+
+try:
+    API_ID = int(os.getenv("API_ID", "0"))
+except ValueError:
+    API_ID = 0
+
 API_HASH = os.getenv("API_HASH")
 
-# Liverpool team ID on API-Football
+
+# =========================================================
+# LIVERPOOL TEAM ID
+# =========================================================
+
 LIVERPOOL_TEAM_ID = 40
+
 
 # =========================================================
 # DATA
@@ -51,24 +74,34 @@ POSTED_FILE = "data/posted_news.json"
 
 posted_news = set()
 
+
 if os.path.exists(POSTED_FILE):
+
     try:
+
         with open(
             POSTED_FILE,
             "r",
             encoding="utf-8"
         ) as f:
-            posted_news = set(json.load(f))
+
+            posted_news = set(
+                json.load(f)
+            )
+
     except Exception:
+
         posted_news = set()
 
 
 def save_posted_news():
+
     with open(
         POSTED_FILE,
         "w",
         encoding="utf-8"
     ) as f:
+
         json.dump(
             list(posted_news)[-5000:],
             f,
@@ -84,7 +117,6 @@ def save_posted_news():
 news_enabled = True
 live_enabled = True
 
-# Stores last known LIVE event state
 last_live_state = {}
 
 
@@ -97,7 +129,10 @@ def is_admin(update: Update):
     if not update.effective_user:
         return False
 
-    return update.effective_user.id == ADMIN_ID
+    return (
+        update.effective_user.id
+        == ADMIN_ID
+    )
 
 
 # =========================================================
@@ -132,19 +167,34 @@ def format_news(text):
 
         lower = line.lower()
 
-        # Remove source information
+        # -------------------------------------------------
+        # REMOVE LIVERPOOL NEWS HEADER
+        # -------------------------------------------------
+
+        if "liverpool news" in lower:
+            continue
+
+        # -------------------------------------------------
+        # REMOVE SOURCE LINES
+        # -------------------------------------------------
+
         if lower.startswith("source:"):
             continue
 
         if lower.startswith("ምንጭ:"):
             continue
 
-        # Remove our own footer if it appears
-        if "@yegnaLiverpool" in line:
+        if lower.startswith("source -"):
             continue
 
-        # Remove Liverpool News header
-        if "liverpool news" in lower:
+        if lower.startswith("ምንጭ -"):
+            continue
+
+        # -------------------------------------------------
+        # REMOVE OLD CHANNEL FOOTER
+        # -------------------------------------------------
+
+        if "@yegnaLiverpool" in line:
             continue
 
         cleaned_lines.append(line)
@@ -153,6 +203,18 @@ def format_news(text):
         cleaned_lines
     ).strip()
 
+    if not clean_text:
+
+        return "@yegnaLiverpool"
+
+    # -------------------------------------------------
+    # FINAL FORMAT
+    #
+    # NEWS
+    #
+    # @yegnaLiverpool
+    # -------------------------------------------------
+
     return (
         f"{clean_text}\n\n"
         f"@yegnaLiverpool"
@@ -160,43 +222,118 @@ def format_news(text):
 
 
 # =========================================================
-# PUBLISH NEWS
+# PUBLISH NEWS + IMAGE
 # =========================================================
 
 async def publish_news(
     text,
-    bot
+    bot,
+    image_path=None
 ):
 
     if not news_enabled:
         return
 
-    if not text:
+    if not text and not image_path:
         return
 
-    news_id = make_hash(text)
+    # -------------------------------------------------
+    # DUPLICATE CHECK
+    # -------------------------------------------------
 
-    # Don't post the same news twice
-    if news_id in posted_news:
-        return
+    news_id = None
 
-    message = format_news(text)
+    if text:
 
-    if not message.strip():
-        return
+        news_id = make_hash(text)
+
+        if news_id in posted_news:
+
+            print(
+                "⏭️ Duplicate news skipped"
+            )
+
+            return
+
+    # -------------------------------------------------
+    # FORMAT NEWS
+    # -------------------------------------------------
+
+    message = ""
+
+    if text:
+
+        message = format_news(text)
+
+    # -------------------------------------------------
+    # SEND IMAGE + NEWS
+    # -------------------------------------------------
 
     try:
 
-        await bot.send_message(
-            chat_id=TARGET_CHANNEL,
-            text=message
-        )
+        if image_path and os.path.exists(
+            image_path
+        ):
 
-        posted_news.add(news_id)
+            print(
+                "🖼️ Sending image + news..."
+            )
 
-        save_posted_news()
+            caption = message
 
-        print("✅ News posted")
+            # Telegram photo caption limit
+            if len(caption) > 1024:
+
+                caption = (
+                    caption[:1020]
+                    + "..."
+                )
+
+            with open(
+                image_path,
+                "rb"
+            ) as photo_file:
+
+                await bot.send_photo(
+                    chat_id=TARGET_CHANNEL,
+                    photo=photo_file,
+                    caption=caption
+                )
+
+            print(
+                "✅ Image + news posted"
+            )
+
+        # -------------------------------------------------
+        # IF THERE IS NO IMAGE
+        # -------------------------------------------------
+
+        else:
+
+            if not message:
+
+                return
+
+            await bot.send_message(
+                chat_id=TARGET_CHANNEL,
+                text=message
+            )
+
+            print(
+                "✅ News posted without image"
+            )
+
+        # -------------------------------------------------
+        # SAVE AS POSTED
+        # -------------------------------------------------
+
+        if news_id:
+
+            posted_news.add(
+                news_id
+            )
+
+            save_posted_news()
 
     except Exception as e:
 
@@ -219,6 +356,10 @@ async def start_source_monitor(
 
     global telegram_client
 
+    # -------------------------------------------------
+    # CHECK API ID / HASH
+    # -------------------------------------------------
+
     if not API_ID or not API_HASH:
 
         print(
@@ -227,6 +368,10 @@ async def start_source_monitor(
 
         return
 
+    # -------------------------------------------------
+    # CHECK SOURCES
+    # -------------------------------------------------
+
     if not SOURCE_CHANNELS:
 
         print(
@@ -234,6 +379,10 @@ async def start_source_monitor(
         )
 
         return
+
+    # -------------------------------------------------
+    # START TELETHON
+    # -------------------------------------------------
 
     telegram_client = TelegramClient(
         "liverpool_source_session",
@@ -247,6 +396,10 @@ async def start_source_monitor(
         "✅ Telegram source monitor started."
     )
 
+    # =================================================
+    # NEW SOURCE MESSAGE
+    # =================================================
+
     @telegram_client.on(
         events.NewMessage(
             chats=SOURCE_CHANNELS
@@ -254,28 +407,98 @@ async def start_source_monitor(
     )
     async def source_message(event):
 
+        image_path = None
+
         try:
 
-            text = event.raw_text
+            # -------------------------------------------------
+            # GET SOURCE TEXT
+            # -------------------------------------------------
 
-            if not text:
+            text = event.raw_text or ""
+
+            # -------------------------------------------------
+            # GET SOURCE IMAGE
+            # -------------------------------------------------
+
+            if event.message.photo:
+
+                print(
+                    "🖼️ Source image detected"
+                )
+
+                temp_dir = tempfile.gettempdir()
+
+                image_path = (
+                    await event.message.download_media(
+                        file=temp_dir
+                    )
+                )
+
+                if image_path:
+
+                    print(
+                        "✅ Source image downloaded:"
+                    )
+
+                    print(
+                        image_path
+                    )
+
+            # -------------------------------------------------
+            # IGNORE EMPTY POSTS
+            # -------------------------------------------------
+
+            if not text and not image_path:
+
                 return
 
             print(
                 "📰 New source news received"
             )
 
+            # -------------------------------------------------
+            # PUBLISH
+            # -------------------------------------------------
+
             await publish_news(
                 text,
-                application.bot
+                application.bot,
+                image_path
             )
 
         except Exception as e:
 
             print(
-                "Source error:",
+                "❌ Source error:",
                 e
             )
+
+        finally:
+
+            # -------------------------------------------------
+            # DELETE TEMP IMAGE
+            # -------------------------------------------------
+
+            if image_path:
+
+                try:
+
+                    if os.path.exists(
+                        image_path
+                    ):
+
+                        os.remove(
+                            image_path
+                        )
+
+                except Exception:
+
+                    pass
+
+    # -------------------------------------------------
+    # KEEP MONITOR RUNNING
+    # -------------------------------------------------
 
     await telegram_client.run_until_disconnected()
 
@@ -289,9 +512,11 @@ async def football_request(
 ):
 
     if not FOOTBALL_API_KEY:
+
         print(
             "⚠️ FOOTBALL_API_KEY missing."
         )
+
         return None
 
     url = (
@@ -336,7 +561,7 @@ async def football_request(
 
 
 # =========================================================
-# CHECK LIVE MATCH
+# CHECK LIVERPOOL LIVE MATCH
 # =========================================================
 
 async def check_liverpool_live(
@@ -344,6 +569,7 @@ async def check_liverpool_live(
 ):
 
     if not live_enabled:
+
         return
 
     data = await football_request(
@@ -351,6 +577,7 @@ async def check_liverpool_live(
     )
 
     if not data:
+
         return
 
     fixtures = data.get(
@@ -358,8 +585,12 @@ async def check_liverpool_live(
         []
     )
 
-    # No Liverpool match right now
+    # -------------------------------------------------
+    # NO LIVE MATCH
+    # -------------------------------------------------
+
     if not fixtures:
+
         return
 
     for fixture in fixtures:
@@ -389,6 +620,7 @@ async def check_liverpool_live(
         )
 
         if not fixture_id:
+
             continue
 
         home = teams.get(
@@ -427,28 +659,49 @@ async def check_liverpool_live(
             "short"
         )
 
+        # -------------------------------------------------
+        # CURRENT STATE
+        # -------------------------------------------------
+
         current_state = {
-            "home_score": home_score,
-            "away_score": away_score,
-            "minute": minute,
-            "status": match_status
+
+            "home_score":
+                home_score,
+
+            "away_score":
+                away_score,
+
+            "minute":
+                minute,
+
+            "status":
+                match_status
         }
 
-        previous_state = last_live_state.get(
-            fixture_id
+        previous_state = (
+            last_live_state.get(
+                fixture_id
+            )
         )
 
-        # Nothing changed
+        # -------------------------------------------------
+        # NOTHING CHANGED
+        # -------------------------------------------------
+
         if previous_state == current_state:
+
             continue
 
-        last_live_state[fixture_id] = current_state
+        last_live_state[
+            fixture_id
+        ] = current_state
 
         # =================================================
-        # MATCH MESSAGE
+        # LIVE MESSAGE
         # =================================================
 
         message = (
+
             f"⚽ {home_name} "
             f"{home_score or 0} - "
             f"{away_score or 0} "
@@ -456,6 +709,7 @@ async def check_liverpool_live(
         )
 
         if minute:
+
             message += (
                 f"⏱️ {minute}'\n\n"
             )
@@ -484,8 +738,13 @@ async def check_liverpool_live(
             )
 
         message += (
-            "\n\n@yegnaLiverpool"
+            "\n\n"
+            "@yegnaLiverpool"
         )
+
+        # -------------------------------------------------
+        # SEND LIVE UPDATE
+        # -------------------------------------------------
 
         try:
 
@@ -543,10 +802,13 @@ async def help_command(
 ):
 
     if not is_admin(update):
+
         return
 
     await update.message.reply_text(
+
         "👑 ADMIN COMMANDS\n\n"
+
         "/status\n"
         "/on\n"
         "/off\n"
@@ -566,21 +828,25 @@ async def status(
 ):
 
     if not is_admin(update):
+
         return
 
     news_status = (
+
         "🟢 ON"
         if news_enabled
         else "🔴 OFF"
     )
 
     live_status = (
+
         "🟢 ON"
         if live_enabled
         else "🔴 OFF"
     )
 
     await update.message.reply_text(
+
         f"📰 News: {news_status}\n"
         f"⚽ Live: {live_status}\n"
         f"📢 Channel: {TARGET_CHANNEL}"
@@ -599,6 +865,7 @@ async def news_on(
     global news_enabled
 
     if not is_admin(update):
+
         return
 
     news_enabled = True
@@ -620,6 +887,7 @@ async def news_off(
     global news_enabled
 
     if not is_admin(update):
+
         return
 
     news_enabled = False
@@ -641,6 +909,7 @@ async def live_on(
     global live_enabled
 
     if not is_admin(update):
+
         return
 
     live_enabled = True
@@ -662,6 +931,7 @@ async def live_off(
     global live_enabled
 
     if not is_admin(update):
+
         return
 
     live_enabled = False
@@ -681,22 +951,27 @@ async def sources(
 ):
 
     if not is_admin(update):
+
         return
 
     if not SOURCE_CHANNELS:
 
         await update.message.reply_text(
-            "⚠️ የዜና ምንጮች አልተጨመሩም።"
+
+            "⚠️ የዜና ምንጮች "
+            "አልተጨመሩም።"
         )
 
         return
 
     source_list = "\n".join(
+
         f"• {channel}"
         for channel in SOURCE_CHANNELS
     )
 
     await update.message.reply_text(
+
         "📰 የTelegram ምንጮች:\n\n"
         + source_list
     )
@@ -711,6 +986,7 @@ async def post_init(
 ):
 
     asyncio.create_task(
+
         start_source_monitor(
             application
         )
@@ -723,11 +999,19 @@ async def post_init(
 
 def main():
 
+    # -------------------------------------------------
+    # CHECK BOT TOKEN
+    # -------------------------------------------------
+
     if not BOT_TOKEN:
 
         raise ValueError(
             "BOT_TOKEN አልተገኘም።"
         )
+
+    # -------------------------------------------------
+    # CHECK ADMIN ID
+    # -------------------------------------------------
 
     if not ADMIN_ID:
 
@@ -735,15 +1019,31 @@ def main():
             "ADMIN_ID አልተገኘም።"
         )
 
+    # -------------------------------------------------
+    # CREATE APPLICATION
+    # -------------------------------------------------
+
     application = (
+
         Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
+
+        .token(
+            BOT_TOKEN
+        )
+
+        .post_init(
+            post_init
+        )
+
         .build()
     )
 
-    # Commands
+    # =================================================
+    # COMMANDS
+    # =================================================
+
     application.add_handler(
+
         CommandHandler(
             "start",
             start
@@ -751,6 +1051,7 @@ def main():
     )
 
     application.add_handler(
+
         CommandHandler(
             "help",
             help_command
@@ -758,6 +1059,7 @@ def main():
     )
 
     application.add_handler(
+
         CommandHandler(
             "status",
             status
@@ -765,6 +1067,7 @@ def main():
     )
 
     application.add_handler(
+
         CommandHandler(
             "on",
             news_on
@@ -772,6 +1075,7 @@ def main():
     )
 
     application.add_handler(
+
         CommandHandler(
             "off",
             news_off
@@ -779,6 +1083,7 @@ def main():
     )
 
     application.add_handler(
+
         CommandHandler(
             "liveon",
             live_on
@@ -786,6 +1091,7 @@ def main():
     )
 
     application.add_handler(
+
         CommandHandler(
             "liveoff",
             live_off
@@ -793,18 +1099,29 @@ def main():
     )
 
     application.add_handler(
+
         CommandHandler(
             "sources",
             sources
         )
     )
 
-    # Check Liverpool LIVE every 5 minutes
+    # =================================================
+    # LIVE CHECK EVERY 5 MINUTES
+    # =================================================
+
     application.job_queue.run_repeating(
+
         live_job,
+
         interval=300,
+
         first=10
     )
+
+    # =================================================
+    # START BOT
+    # =================================================
 
     print(
         "🔴 Liverpool Admin Bot started!"
@@ -813,5 +1130,11 @@ def main():
     application.run_polling()
 
 
+# =========================================================
+# RUN
+# =========================================================
+
 if __name__ == "__main__":
+
     main()
+```
