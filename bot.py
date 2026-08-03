@@ -24,7 +24,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
-# IMPORTANT: MAIN CHANNEL
 CHANNEL = "@yegnaLiverpool"
 
 GROQ_MODEL = os.getenv(
@@ -38,10 +37,10 @@ MAX_ARTICLE_AGE_HOURS = 24
 
 DB_FILE = "liverpool_news.db"
 
-# Sends a Telegram test message when bot starts
+# Telegram startup test is OFF.
 SEND_STARTUP_TEST = os.getenv(
     "SEND_STARTUP_TEST",
-    "true"
+    "false"
 ).lower() == "true"
 
 USER_AGENT = (
@@ -101,12 +100,24 @@ logger = logging.getLogger(
 # =========================================================
 
 TRUSTED_DOMAINS = {
-    "liverpoolfc.com": "Liverpool FC",
+    "liverpoolfc.com": "Liverpool FC Official",
     "theathletic.com": "The Athletic",
     "thetimes.com": "The Times",
     "x.com": "Fabrizio Romano",
     "twitter.com": "Fabrizio Romano",
     "fabricioromano.com": "Fabrizio Romano",
+}
+
+
+# =========================================================
+# TRUSTED REPORTERS
+# =========================================================
+
+TRUSTED_REPORTERS = {
+    "paul joyce": "Paul Joyce",
+    "david ornstein": "David Ornstein",
+    "james pearce": "James Pearce",
+    "fabrizio romano": "Fabrizio Romano",
 }
 
 
@@ -228,27 +239,24 @@ def title_similarity(a, b):
 # LIVERPOOL FILTER
 # =========================================================
 
-LIVERPOOL_KEYWORDS = [
+LIVERPOOL_STRONG_KEYWORDS = [
     "liverpool",
     "liverpool fc",
     "lfc",
     "anfield",
-    "reds",
+    "liverpool football club",
 
-    "arne slot",
-    "slot",
-
-    "salah",
     "mohamed salah",
+    "salah",
 
-    "gakpo",
     "cody gakpo",
+    "gakpo",
 
-    "diaz",
     "luis diaz",
+    "diaz",
 
-    "nunez",
     "darwin nunez",
+    "nunez",
 
     "szoboszlai",
     "mac allister",
@@ -271,17 +279,31 @@ LIVERPOOL_KEYWORDS = [
     "endo",
 
     "iraola",
+    "arne slot",
 ]
 
 
 def is_liverpool_related(text):
 
-    text = text.lower()
+    text = clean_text(
+        text
+    ).lower()
 
-    return any(
-        keyword in text
-        for keyword in LIVERPOOL_KEYWORDS
-    )
+    if "liverpool" in text:
+        return True
+
+    if "liverpool fc" in text:
+        return True
+
+    if "lfc" in text:
+        return True
+
+    for keyword in LIVERPOOL_STRONG_KEYWORDS:
+
+        if keyword in text:
+            return True
+
+    return False
 
 
 # =========================================================
@@ -350,6 +372,7 @@ def telegram_api(
         )
 
         try:
+
             result = response.json()
 
         except Exception:
@@ -380,10 +403,6 @@ def telegram_api(
             "description": str(e)
         }
 
-
-# =========================================================
-# TELEGRAM CONNECTION TEST
-# =========================================================
 
 def telegram_get_me():
 
@@ -647,6 +666,107 @@ def extract_meta(
 
 
 # =========================================================
+# AUTHOR
+# =========================================================
+
+def extract_author(soup):
+
+    selectors = [
+        (
+            "meta",
+            {"name": "author"}
+        ),
+        (
+            "meta",
+            {"property": "article:author"}
+        ),
+        (
+            "meta",
+            {"name": "byl"}
+        ),
+        (
+            "meta",
+            {"name": "byline"}
+        ),
+    ]
+
+    for tag_name, attrs in selectors:
+
+        tag = soup.find(
+            tag_name,
+            attrs=attrs
+        )
+
+        if tag:
+
+            author = clean_text(
+                tag.get(
+                    "content",
+                    ""
+                )
+            )
+
+            if author:
+                return author
+
+    for selector in [
+        '[rel="author"]',
+        '.author',
+        '.byline',
+        '[class*="author"]',
+        '[class*="byline"]'
+    ]:
+
+        try:
+
+            tag = soup.select_one(
+                selector
+            )
+
+        except Exception:
+
+            tag = None
+
+        if tag:
+
+            author = clean_text(
+                tag.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if author:
+                return author
+
+    return ""
+
+
+# =========================================================
+# AUTHOR CHECK
+# =========================================================
+
+def identify_trusted_reporter(
+    author
+):
+
+    if not author:
+        return None
+
+    normalized_author = normalize(
+        author
+    )
+
+    for reporter_key, reporter_name in TRUSTED_REPORTERS.items():
+
+        if reporter_key in normalized_author:
+
+            return reporter_name
+
+    return None
+
+
+# =========================================================
 # ARTICLE IMAGE
 # =========================================================
 
@@ -737,10 +857,9 @@ def extract_article_image(
             image
         )
 
-        if image.startswith(
-            "http://"
-        ) or image.startswith(
-            "https://"
+        if (
+            image.startswith("http://")
+            or image.startswith("https://")
         ):
 
             return image
@@ -793,6 +912,10 @@ def fetch_article(url):
         image_url = extract_article_image(
             soup,
             final_url
+        )
+
+        author = extract_author(
+            soup
         )
 
         for tag in soup.find_all([
@@ -879,7 +1002,8 @@ def fetch_article(url):
             ),
             "body": body,
             "image_url": image_url,
-            "url": final_url
+            "url": final_url,
+            "author": author
         }
 
     except Exception as e:
@@ -1190,6 +1314,58 @@ def is_recent(entry):
 
 
 # =========================================================
+# REJECT LOGGER
+# =========================================================
+
+def reject_news(
+    reason,
+    title="",
+    source="",
+    url=""
+):
+
+    logger.info(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    logger.info(
+        "❌ REJECT"
+    )
+
+    if title:
+
+        logger.info(
+            "📰 TITLE: %s",
+            title
+        )
+
+    if source:
+
+        logger.info(
+            "🌐 SOURCE: %s",
+            source
+        )
+
+    if url:
+
+        logger.info(
+            "🔗 URL: %s",
+            url
+        )
+
+    logger.info(
+        "📌 REASON: %s",
+        reason
+    )
+
+    logger.info(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    return False
+
+
+# =========================================================
 # GROQ EDITOR
 # =========================================================
 
@@ -1197,8 +1373,9 @@ NEWS_EDITOR_PROMPT = """
 አንተ ለLiverpool FC የአማርኛ Telegram ዜና
 አርታኢ ነህ።
 
-የተሰጠህን article በመረጃው ላይ ብቻ
-ተመስርተህ በተፈጥሯዊና በሙያዊ አማርኛ አዘጋጅ።
+የተሰጠህን article በarticle ውስጥ ባለው
+መረጃ ላይ ብቻ ተመስርተህ በተፈጥሯዊና
+በሙያዊ አማርኛ አዘጋጅ።
 
 ጥብቅ ደንቦች:
 
@@ -1209,14 +1386,14 @@ NEWS_EDITOR_PROMPT = """
 5. Injury አትፍጠር።
 6. Date አትፍጠር።
 7. Source አትፍጠር።
-8. could/may/reportedly/according to ያሉ
-   ቃላት የሚያሳዩትን እርግጠኛ እውነታ
-   እንደሆነ አትቀይር።
+8. could / may / reportedly / according to
+   ያሉ ቃላት የሚያሳዩትን እርግጠኛ
+   እውነታ እንደሆነ አትቀይር።
 9. ዜናው Liverpool FC ጋር በግልጽ
    መያያዝ አለበት።
 10. English headline አትጻፍ።
 11. English paragraph አትጻፍ።
-12. ቃል በቃል machine translation አትስራ።
+12. Machine translation አትስራ።
 13. የአማርኛ የስፖርት ዘገባ ቋንቋ ተጠቀም።
 14. የተጫዋቾችን ስም በትክክል ጠብቅ።
 15. Headline አጭርና ግልጽ ይሁን።
@@ -1227,6 +1404,12 @@ NEWS_EDITOR_PROMPT = """
 20. @yegnaLiverpool አትጨምር።
 21. በቂ መረጃ ከሌለ REJECT አድርግ።
 22. Liverpool ጋር በግልጽ ካልተያያዘ REJECT አድርግ።
+23. ትንሽ ወይም ዋጋ የሌለው መረጃ
+    ከሆነ REJECT አድርግ።
+24. የLiverpool አስፈላጊ ዜና ከሆነ
+    POST አድርግ።
+25. የsource እርግጠኝነት ካልታወቀ
+    የተሰጠውን መረጃ ብቻ ተጠቀም።
 
 JSON ብቻ መልስ:
 
@@ -1244,12 +1427,16 @@ def ai_edit_news(
     title,
     body,
     source,
-    url
+    url,
+    author=""
 ):
 
     prompt = f"""
 SOURCE:
 {source}
+
+AUTHOR:
+{author or "Unknown"}
 
 TITLE:
 {title}
@@ -1409,79 +1596,127 @@ def process_news(entry):
     )
 
     if not original_title or not google_url:
-        return False
+
+        return reject_news(
+            "Missing title or URL."
+        )
 
     logger.info(
-        "Checking: %s",
+        "🔎 CHECKING: %s",
         original_title
     )
 
-    # Recent
+    # -----------------------------------------------------
+    # RECENT
+    # -----------------------------------------------------
+
     if not is_recent(entry):
 
-        logger.info(
-            "REJECT: article too old"
+        return reject_news(
+            "Article is older than "
+            f"{MAX_ARTICLE_AGE_HOURS} hours.",
+            original_title
         )
 
-        return False
+    # -----------------------------------------------------
+    # RESOLVE
+    # -----------------------------------------------------
 
-    # Resolve
     real_url = resolve_url(
         google_url
     )
 
-    # Trusted source
+    # -----------------------------------------------------
+    # TRUSTED SOURCE
+    # -----------------------------------------------------
+
     source = trusted_source(
         real_url
     )
 
     if not source:
 
-        logger.info(
-            "REJECT: untrusted source"
+        return reject_news(
+            "Source is not in TRUSTED_DOMAINS.",
+            original_title,
+            "UNTRUSTED",
+            real_url
         )
 
-        return False
-
     logger.info(
-        "Trusted source: %s",
+        "✅ TRUSTED SOURCE: %s",
         source
     )
 
-    # Quick Liverpool filter
+    # -----------------------------------------------------
+    # QUICK LIVERPOOL CHECK
+    # -----------------------------------------------------
+
     if not is_liverpool_related(
         original_title
     ):
 
-        logger.info(
-            "REJECT: not Liverpool"
+        return reject_news(
+            "Title does not appear to concern Liverpool.",
+            original_title,
+            source,
+            real_url
         )
 
-        return False
+    # -----------------------------------------------------
+    # FETCH ARTICLE
+    # -----------------------------------------------------
 
-    # Article
     article = fetch_article(
         real_url
     )
 
     if not article:
 
-        return False
+        return reject_news(
+            "Could not fetch article.",
+            original_title,
+            source,
+            real_url
+        )
 
     title = (
-        article["title"]
+        article.get("title")
         or original_title
     )
 
-    body = article["body"]
+    body = clean_text(
+        article.get(
+            "body",
+            ""
+        )
+    )
+
+    author = clean_text(
+        article.get(
+            "author",
+            ""
+        )
+    )
+
+    logger.info(
+        "👤 AUTHOR: %s",
+        author or "Unknown"
+    )
 
     if len(body) < 250:
 
-        logger.info(
-            "REJECT: body too short"
+        return reject_news(
+            f"Article body too short: "
+            f"{len(body)} characters.",
+            title,
+            source,
+            real_url
         )
 
-        return False
+    # -----------------------------------------------------
+    # FULL ARTICLE LIVERPOOL CHECK
+    # -----------------------------------------------------
 
     combined = (
         title
@@ -1493,58 +1728,81 @@ def process_news(entry):
         combined
     ):
 
-        logger.info(
-            "REJECT: article not Liverpool"
+        return reject_news(
+            "Full article does not contain enough "
+            "Liverpool-related information.",
+            title,
+            source,
+            real_url
         )
 
-        return False
+    # -----------------------------------------------------
+    # DUPLICATE
+    # -----------------------------------------------------
 
-    # Duplicate
     if news_was_posted(
         title,
         real_url
     ):
 
-        logger.info(
-            "REJECT: duplicate"
+        return reject_news(
+            "Duplicate or very similar article "
+            "already posted.",
+            title,
+            source,
+            real_url
         )
 
-        return False
+    # -----------------------------------------------------
+    # POST GAP
+    # -----------------------------------------------------
 
-    # Post gap
     if not can_post():
 
         logger.info(
-            "WAIT: 5 minute gap"
+            "⏳ WAIT: Minimum post gap has not passed."
         )
 
         return False
 
+    # -----------------------------------------------------
     # AI
+    # -----------------------------------------------------
+
+    logger.info(
+        "🤖 Sending article to AI editor..."
+    )
+
     edited = ai_edit_news(
         title,
         body,
         source,
-        real_url
+        real_url,
+        author
     )
 
     if not edited:
 
-        return False
-
-    if edited.get(
-        "decision"
-    ) != "POST":
-
-        logger.info(
-            "REJECT by AI: %s",
-            edited.get(
-                "reason",
-                ""
-            )
+        return reject_news(
+            "AI editor returned no valid response.",
+            title,
+            source,
+            real_url
         )
 
-        return False
+    decision = str(
+        edited.get(
+            "decision",
+            ""
+        )
+    ).strip().upper()
+
+    reason = clean_text(
+        edited.get(
+            "reason",
+            ""
+        )
+    )
 
     try:
 
@@ -1559,14 +1817,41 @@ def process_news(entry):
 
         confidence = 0
 
-    if confidence < 85:
+    logger.info(
+        "🤖 AI DECISION: %s | "
+        "CONFIDENCE: %s | "
+        "REASON: %s",
+        decision,
+        confidence,
+        reason
+    )
 
-        logger.info(
-            "REJECT confidence: %s",
-            confidence
+    if decision != "POST":
+
+        return reject_news(
+            "AI rejected article: "
+            + (
+                reason
+                or "No reason provided."
+            ),
+            title,
+            source,
+            real_url
         )
 
-        return False
+    if confidence < 85:
+
+        return reject_news(
+            f"AI confidence too low: "
+            f"{confidence}/100.",
+            title,
+            source,
+            real_url
+        )
+
+    # -----------------------------------------------------
+    # AMHARIC
+    # -----------------------------------------------------
 
     headline = clean_text(
         edited.get(
@@ -1587,13 +1872,17 @@ def process_news(entry):
         body_am
     ):
 
-        logger.info(
-            "REJECT: invalid Amharic"
+        return reject_news(
+            "AI output failed Amharic validation.",
+            title,
+            source,
+            real_url
         )
 
-        return False
+    # -----------------------------------------------------
+    # IMAGE
+    # -----------------------------------------------------
 
-    # Image
     image = None
 
     image_url = article.get(
@@ -1614,17 +1903,23 @@ def process_news(entry):
 
                 image = downloaded
 
-    # Caption
+    # -----------------------------------------------------
+    # CAPTION
+    # -----------------------------------------------------
+
     caption = make_caption(
         headline,
         body_am
     )
 
-    # Send
+    # -----------------------------------------------------
+    # TELEGRAM
+    # -----------------------------------------------------
+
     if image:
 
         logger.info(
-            "Sending photo to @yegnaLiverpool..."
+            "📸 Sending photo to @yegnaLiverpool..."
         )
 
         success = telegram_send_photo(
@@ -1644,7 +1939,7 @@ def process_news(entry):
         else:
 
             logger.warning(
-                "Photo failed. Sending text..."
+                "Photo failed. Sending text instead..."
             )
 
             success = telegram_send_message(
@@ -1656,7 +1951,7 @@ def process_news(entry):
     else:
 
         logger.info(
-            "Sending text to @yegnaLiverpool..."
+            "📝 Sending text to @yegnaLiverpool..."
         )
 
         success = telegram_send_message(
@@ -1668,7 +1963,7 @@ def process_news(entry):
     if not success:
 
         logger.error(
-            "Telegram post failed."
+            "❌ Telegram post failed."
         )
 
         return False
@@ -1681,7 +1976,7 @@ def process_news(entry):
     )
 
     logger.info(
-        "SUCCESS: POSTED TO @yegnaLiverpool"
+        "✅ SUCCESS: POSTED TO @yegnaLiverpool"
     )
 
     return True
@@ -1709,11 +2004,17 @@ def run_bot():
         "=========================================="
     )
 
-    # Database
+    # -----------------------------------------------------
+    # DATABASE
+    # -----------------------------------------------------
+
     conn = get_db()
     conn.close()
 
-    # Telegram connection
+    # -----------------------------------------------------
+    # TELEGRAM CONNECTION
+    # -----------------------------------------------------
+
     logger.info(
         "Testing Telegram connection..."
     )
@@ -1737,46 +2038,48 @@ def run_bot():
         bot_username
     )
 
-    # IMPORTANT CHANNEL TEST
-    logger.info(
-        "Testing @yegnaLiverpool..."
-    )
+    # -----------------------------------------------------
+    # OPTIONAL STARTUP TEST
+    # -----------------------------------------------------
 
-    test_result = telegram_send_message(
-        "🤖 Liverpool News Bot ተገናኝቷል 🚀\n\n"
-        "ይህ የሙከራ መልዕክት ከ Bot-ው ወደ "
-        "@yegnaLiverpool ነው።"
-    )
-
-    if test_result:
+    if SEND_STARTUP_TEST:
 
         logger.info(
-            "CHANNEL TEST SUCCESS ✅"
+            "SEND_STARTUP_TEST=true"
         )
 
-    else:
+        if telegram_startup_test():
 
-        raise RuntimeError(
-            "Bot connected to Telegram, "
-            "but cannot send messages to "
-            "@yegnaLiverpool. "
-            "Make sure the bot is an ADMIN in "
-            "the channel and has Post Messages permission."
-        )
+            logger.info(
+                "STARTUP TEST SUCCESS ✅"
+            )
 
-    # Main loop
+        else:
+
+            logger.warning(
+                "STARTUP TEST FAILED"
+            )
+
+    # -----------------------------------------------------
+    # MAIN LOOP
+    # -----------------------------------------------------
+
     while True:
 
         try:
 
             logger.info(
-                "Searching for Liverpool news..."
+                "=========================================="
+            )
+
+            logger.info(
+                "🔎 Searching for Liverpool news..."
             )
 
             candidates = get_google_news()
 
             logger.info(
-                "Candidates: %s",
+                "Candidates found: %s",
                 len(candidates)
             )
 
@@ -1799,6 +2102,7 @@ def run_bot():
                     ):
 
                         posted = True
+
                         break
 
                 except Exception as e:
@@ -1814,16 +2118,16 @@ def run_bot():
                     "No suitable new Liverpool news."
                 )
 
+            logger.info(
+                "Sleeping 5 minutes..."
+            )
+
         except Exception as e:
 
             logger.exception(
                 "MAIN LOOP ERROR: %s",
                 e
             )
-
-        logger.info(
-            "Sleeping 5 minutes..."
-        )
 
         time.sleep(
             CHECK_EVERY
@@ -1844,7 +2148,6 @@ if __name__ == "__main__":
 
         logger.info(
             "Bot stopped."
-
         )
 
     except Exception as e:
@@ -1855,3 +2158,4 @@ if __name__ == "__main__":
         )
 
         raise
+
