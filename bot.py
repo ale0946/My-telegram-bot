@@ -33,14 +33,16 @@ GROQ_MODEL = os.getenv(
 
 CHECK_EVERY = 5 * 60
 MIN_POST_GAP = 5 * 60
+
+# Maximum age of an article
 MAX_ARTICLE_AGE_HOURS = 24
 
 DB_FILE = "liverpool_news.db"
 
-# Telegram startup test is OFF.
+# Set false if you do not want startup test messages
 SEND_STARTUP_TEST = os.getenv(
     "SEND_STARTUP_TEST",
-    "false"
+    "true"
 ).lower() == "true"
 
 USER_AGENT = (
@@ -100,24 +102,12 @@ logger = logging.getLogger(
 # =========================================================
 
 TRUSTED_DOMAINS = {
-    "liverpoolfc.com": "Liverpool FC Official",
+    "liverpoolfc.com": "Liverpool FC",
     "theathletic.com": "The Athletic",
     "thetimes.com": "The Times",
     "x.com": "Fabrizio Romano",
     "twitter.com": "Fabrizio Romano",
     "fabricioromano.com": "Fabrizio Romano",
-}
-
-
-# =========================================================
-# TRUSTED REPORTERS
-# =========================================================
-
-TRUSTED_REPORTERS = {
-    "paul joyce": "Paul Joyce",
-    "david ornstein": "David Ornstein",
-    "james pearce": "James Pearce",
-    "fabrizio romano": "Fabrizio Romano",
 }
 
 
@@ -239,24 +229,26 @@ def title_similarity(a, b):
 # LIVERPOOL FILTER
 # =========================================================
 
-LIVERPOOL_STRONG_KEYWORDS = [
+LIVERPOOL_KEYWORDS = [
     "liverpool",
     "liverpool fc",
     "lfc",
     "anfield",
-    "liverpool football club",
 
-    "mohamed salah",
+    "arne slot",
+    "slot",
+
     "salah",
+    "mohamed salah",
 
-    "cody gakpo",
     "gakpo",
+    "cody gakpo",
 
-    "luis diaz",
     "diaz",
+    "luis diaz",
 
-    "darwin nunez",
     "nunez",
+    "darwin nunez",
 
     "szoboszlai",
     "mac allister",
@@ -279,7 +271,10 @@ LIVERPOOL_STRONG_KEYWORDS = [
     "endo",
 
     "iraola",
-    "arne slot",
+
+    # Additional Liverpool-related terms
+    "merseyside",
+    "reds"
 ]
 
 
@@ -289,16 +284,7 @@ def is_liverpool_related(text):
         text
     ).lower()
 
-    if "liverpool" in text:
-        return True
-
-    if "liverpool fc" in text:
-        return True
-
-    if "lfc" in text:
-        return True
-
-    for keyword in LIVERPOOL_STRONG_KEYWORDS:
+    for keyword in LIVERPOOL_KEYWORDS:
 
         if keyword in text:
             return True
@@ -333,6 +319,9 @@ def trusted_source(url):
     domain = get_domain(
         url
     )
+
+    if not domain:
+        return None
 
     for trusted_domain, name in TRUSTED_DOMAINS.items():
 
@@ -372,7 +361,6 @@ def telegram_api(
         )
 
         try:
-
             result = response.json()
 
         except Exception:
@@ -411,9 +399,7 @@ def telegram_get_me():
     )
 
 
-def telegram_send_message(
-    text
-):
+def telegram_send_message(text):
 
     result = telegram_api(
         "sendMessage",
@@ -487,7 +473,7 @@ def resolve_url(url):
         final_url = response.url
 
         logger.info(
-            "URL resolved: %s -> %s",
+            "URL: %s -> %s",
             url,
             final_url
         )
@@ -524,6 +510,11 @@ def get_google_news():
 
     for query in queries:
 
+        logger.info(
+            "RSS SEARCH: %s",
+            query
+        )
+
         rss_url = (
             "https://news.google.com/rss/search?"
             f"q={quote_plus(query)}"
@@ -544,6 +535,12 @@ def get_google_news():
 
             feed = feedparser.parse(
                 response.content
+            )
+
+            logger.info(
+                "RSS RESULT [%s]: %s entries",
+                query,
+                len(feed.entries)
             )
 
             for entry in feed.entries:
@@ -589,10 +586,20 @@ def get_google_news():
                     None
                 )
 
+                # Google News summary
+                summary = clean_text(
+                    getattr(
+                        entry,
+                        "summary",
+                        ""
+                    )
+                )
+
                 results.append({
                     "title": title,
                     "url": link,
                     "source_title": source_title,
+                    "summary": summary,
                     "published": published
                 })
 
@@ -617,6 +624,11 @@ def get_google_news():
         )
 
         unique[key] = item
+
+    logger.info(
+        "TOTAL UNIQUE RSS CANDIDATES: %s",
+        len(unique)
+    )
 
     return list(
         unique.values()
@@ -663,107 +675,6 @@ def extract_meta(
         )
 
     return ""
-
-
-# =========================================================
-# AUTHOR
-# =========================================================
-
-def extract_author(soup):
-
-    selectors = [
-        (
-            "meta",
-            {"name": "author"}
-        ),
-        (
-            "meta",
-            {"property": "article:author"}
-        ),
-        (
-            "meta",
-            {"name": "byl"}
-        ),
-        (
-            "meta",
-            {"name": "byline"}
-        ),
-    ]
-
-    for tag_name, attrs in selectors:
-
-        tag = soup.find(
-            tag_name,
-            attrs=attrs
-        )
-
-        if tag:
-
-            author = clean_text(
-                tag.get(
-                    "content",
-                    ""
-                )
-            )
-
-            if author:
-                return author
-
-    for selector in [
-        '[rel="author"]',
-        '.author',
-        '.byline',
-        '[class*="author"]',
-        '[class*="byline"]'
-    ]:
-
-        try:
-
-            tag = soup.select_one(
-                selector
-            )
-
-        except Exception:
-
-            tag = None
-
-        if tag:
-
-            author = clean_text(
-                tag.get_text(
-                    " ",
-                    strip=True
-                )
-            )
-
-            if author:
-                return author
-
-    return ""
-
-
-# =========================================================
-# AUTHOR CHECK
-# =========================================================
-
-def identify_trusted_reporter(
-    author
-):
-
-    if not author:
-        return None
-
-    normalized_author = normalize(
-        author
-    )
-
-    for reporter_key, reporter_name in TRUSTED_REPORTERS.items():
-
-        if reporter_key in normalized_author:
-
-            return reporter_name
-
-    return None
 
 
 # =========================================================
@@ -857,9 +768,10 @@ def extract_article_image(
             image
         )
 
-        if (
-            image.startswith("http://")
-            or image.startswith("https://")
+        if image.startswith(
+            "http://"
+        ) or image.startswith(
+            "https://"
         ):
 
             return image
@@ -871,15 +783,28 @@ def extract_article_image(
 # FETCH ARTICLE
 # =========================================================
 
-def fetch_article(url):
+def fetch_article(
+    url,
+    rss_summary=""
+):
 
     try:
+
+        logger.info(
+            "FETCH ARTICLE: %s",
+            url
+        )
 
         response = requests.get(
             url,
             headers=HEADERS,
             timeout=30,
             allow_redirects=True
+        )
+
+        logger.info(
+            "ARTICLE HTTP STATUS: %s",
+            response.status_code
         )
 
         if response.status_code != 200:
@@ -889,6 +814,16 @@ def fetch_article(url):
                 response.status_code,
                 url
             )
+
+            # Use RSS summary if available
+            if len(rss_summary) >= 100:
+
+                return {
+                    "title": "",
+                    "body": rss_summary,
+                    "image_url": None,
+                    "url": url
+                }
 
             return None
 
@@ -912,10 +847,6 @@ def fetch_article(url):
         image_url = extract_article_image(
             soup,
             final_url
-        )
-
-        author = extract_author(
-            soup
         )
 
         for tag in soup.find_all([
@@ -981,20 +912,44 @@ def fetch_article(url):
             paragraphs
         )
 
-        if len(body) < 500:
-
-            body += (
-                "\n"
-                + meta_description
-            )
-
         body = clean_text(
             body
         )
 
+        # -------------------------------------------------
+        # IMPORTANT FALLBACK
+        # -------------------------------------------------
+
+        if len(body) < 500:
+
+            if len(rss_summary) >= 100:
+
+                logger.info(
+                    "ARTICLE BODY SHORT -> USING RSS SUMMARY"
+                )
+
+                body = clean_text(
+                    rss_summary
+                )
+
+            elif meta_description:
+
+                logger.info(
+                    "ARTICLE BODY SHORT -> USING META DESCRIPTION"
+                )
+
+                body = clean_text(
+                    meta_description
+                )
+
         if len(body) > 14000:
 
             body = body[:14000]
+
+        logger.info(
+            "ARTICLE BODY LENGTH: %s",
+            len(body)
+        )
 
         return {
             "title": clean_text(
@@ -1002,8 +957,7 @@ def fetch_article(url):
             ),
             "body": body,
             "image_url": image_url,
-            "url": final_url,
-            "author": author
+            "url": final_url
         }
 
     except Exception as e:
@@ -1012,6 +966,21 @@ def fetch_article(url):
             "Article fetch error: %s",
             e
         )
+
+        if len(rss_summary) >= 100:
+
+            logger.info(
+                "FETCH FAILED -> USING RSS SUMMARY"
+            )
+
+            return {
+                "title": "",
+                "body": clean_text(
+                    rss_summary
+                ),
+                "image_url": None,
+                "url": url
+            }
 
         return None
 
@@ -1178,6 +1147,10 @@ def news_was_posted(
 
         conn.close()
 
+        logger.info(
+            "DUPLICATE: exact fingerprint"
+        )
+
         return True
 
     recent = conn.execute(
@@ -1193,10 +1166,17 @@ def news_was_posted(
 
     for old in recent:
 
-        if title_similarity(
+        similarity = title_similarity(
             title,
             old[0]
-        ) >= 0.70:
+        )
+
+        if similarity >= 0.70:
+
+            logger.info(
+                "DUPLICATE: title similarity %.2f",
+                similarity
+            )
 
             return True
 
@@ -1272,7 +1252,16 @@ def can_post():
         - int(row[0])
     )
 
-    return elapsed >= MIN_POST_GAP
+    if elapsed < MIN_POST_GAP:
+
+        logger.info(
+            "POST GAP: only %.0f seconds elapsed",
+            elapsed
+        )
+
+        return False
+
+    return True
 
 
 # =========================================================
@@ -1286,6 +1275,11 @@ def is_recent(entry):
     )
 
     if not published:
+
+        logger.info(
+            "AGE: no publication date -> allowing"
+        )
+
         return True
 
     try:
@@ -1304,65 +1298,25 @@ def is_recent(entry):
             - published_dt
         )
 
+        hours = age.total_seconds() / 3600
+
+        logger.info(
+            "ARTICLE AGE: %.1f hours",
+            hours
+        )
+
         return age <= timedelta(
             hours=MAX_ARTICLE_AGE_HOURS
         )
 
-    except Exception:
+    except Exception as e:
+
+        logger.warning(
+            "Age check failed: %s",
+            e
+        )
 
         return True
-
-
-# =========================================================
-# REJECT LOGGER
-# =========================================================
-
-def reject_news(
-    reason,
-    title="",
-    source="",
-    url=""
-):
-
-    logger.info(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-
-    logger.info(
-        "❌ REJECT"
-    )
-
-    if title:
-
-        logger.info(
-            "📰 TITLE: %s",
-            title
-        )
-
-    if source:
-
-        logger.info(
-            "🌐 SOURCE: %s",
-            source
-        )
-
-    if url:
-
-        logger.info(
-            "🔗 URL: %s",
-            url
-        )
-
-    logger.info(
-        "📌 REASON: %s",
-        reason
-    )
-
-    logger.info(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-
-    return False
 
 
 # =========================================================
@@ -1386,9 +1340,9 @@ NEWS_EDITOR_PROMPT = """
 5. Injury አትፍጠር።
 6. Date አትፍጠር።
 7. Source አትፍጠር።
-8. could / may / reportedly / according to
-   ያሉ ቃላት የሚያሳዩትን እርግጠኛ
-   እውነታ እንደሆነ አትቀይር።
+8. could/may/reportedly/according to የሚሉ
+   ቃላት ያሳዩትን እርግጠኛ እውነታ
+   እንደሆነ አትቀይር።
 9. ዜናው Liverpool FC ጋር በግልጽ
    መያያዝ አለበት።
 10. English headline አትጻፍ።
@@ -1403,13 +1357,10 @@ NEWS_EDITOR_PROMPT = """
 19. Markdown አትጠቀም።
 20. @yegnaLiverpool አትጨምር።
 21. በቂ መረጃ ከሌለ REJECT አድርግ።
-22. Liverpool ጋር በግልጽ ካልተያያዘ REJECT አድርግ።
-23. ትንሽ ወይም ዋጋ የሌለው መረጃ
-    ከሆነ REJECT አድርግ።
-24. የLiverpool አስፈላጊ ዜና ከሆነ
-    POST አድርግ።
-25. የsource እርግጠኝነት ካልታወቀ
-    የተሰጠውን መረጃ ብቻ ተጠቀም።
+22. Liverpool FC ጋር በግልጽ ካልተያያዘ REJECT አድርግ።
+23. የarticle መረጃ እርግጠኛ ካልሆነ
+    ያልተረጋገጠውን እንደተረጋገጠ
+    አታቅርብ።
 
 JSON ብቻ መልስ:
 
@@ -1427,16 +1378,17 @@ def ai_edit_news(
     title,
     body,
     source,
-    url,
-    author=""
+    url
 ):
+
+    logger.info(
+        "AI CHECK START: %s",
+        title
+    )
 
     prompt = f"""
 SOURCE:
 {source}
-
-AUTHOR:
-{author or "Unknown"}
 
 TITLE:
 {title}
@@ -1476,9 +1428,18 @@ URL:
             .content
         )
 
-        return json.loads(
+        result = json.loads(
             raw
         )
+
+        logger.info(
+            "AI DECISION: %s | confidence=%s | reason=%s",
+            result.get("decision"),
+            result.get("confidence"),
+            result.get("reason", "")
+        )
+
+        return result
 
     except Exception as e:
 
@@ -1535,6 +1496,11 @@ def valid_amharic_output(
 ):
 
     if not headline or not body:
+
+        logger.info(
+            "AMHARIC CHECK: empty headline/body"
+        )
+
         return False
 
     text = (
@@ -1543,10 +1509,31 @@ def valid_amharic_output(
         + body
     )
 
-    if amharic_ratio(text) < 0.30:
+    ratio = amharic_ratio(
+        text
+    )
+
+    logger.info(
+        "AMHARIC RATIO: %.2f",
+        ratio
+    )
+
+    if ratio < 0.30:
+
+        logger.info(
+            "AMHARIC REJECT: ratio too low"
+        )
+
         return False
 
-    if english_sentence_detected(text):
+    if english_sentence_detected(
+        text
+    ):
+
+        logger.info(
+            "AMHARIC REJECT: English sentence detected"
+        )
+
         return False
 
     return True
@@ -1595,39 +1582,69 @@ def process_news(entry):
         ""
     )
 
-    if not original_title or not google_url:
-
-        return reject_news(
-            "Missing title or URL."
+    rss_summary = clean_text(
+        entry.get(
+            "summary",
+            ""
         )
+    )
+
+    source_title = clean_text(
+        entry.get(
+            "source_title",
+            ""
+        )
+    )
 
     logger.info(
-        "🔎 CHECKING: %s",
+        "=================================================="
+    )
+
+    logger.info(
+        "CHECKING NEWS: %s",
         original_title
     )
 
+    logger.info(
+        "RSS SOURCE: %s",
+        source_title
+    )
+
+    if not original_title or not google_url:
+
+        logger.info(
+            "REJECT: missing title or URL"
+        )
+
+        return False
+
     # -----------------------------------------------------
-    # RECENT
+    # 1. RECENT
     # -----------------------------------------------------
 
     if not is_recent(entry):
 
-        return reject_news(
-            "Article is older than "
-            f"{MAX_ARTICLE_AGE_HOURS} hours.",
-            original_title
+        logger.info(
+            "REJECT: article too old"
         )
 
+        return False
+
     # -----------------------------------------------------
-    # RESOLVE
+    # 2. RESOLVE URL
     # -----------------------------------------------------
 
     real_url = resolve_url(
         google_url
     )
 
+    logger.info(
+        "FINAL URL: %s",
+        real_url
+    )
+
     # -----------------------------------------------------
-    # TRUSTED SOURCE
+    # 3. TRUSTED SOURCE
     # -----------------------------------------------------
 
     source = trusted_source(
@@ -1636,86 +1653,83 @@ def process_news(entry):
 
     if not source:
 
-        return reject_news(
-            "Source is not in TRUSTED_DOMAINS.",
-            original_title,
-            "UNTRUSTED",
-            real_url
+        logger.info(
+            "REJECT: UNTRUSTED SOURCE"
         )
 
+        logger.info(
+            "DOMAIN FOUND: %s",
+            get_domain(real_url)
+        )
+
+        return False
+
     logger.info(
-        "✅ TRUSTED SOURCE: %s",
+        "TRUSTED SOURCE: %s",
         source
     )
 
     # -----------------------------------------------------
-    # QUICK LIVERPOOL CHECK
+    # 4. QUICK LIVERPOOL CHECK
     # -----------------------------------------------------
 
     if not is_liverpool_related(
         original_title
     ):
 
-        return reject_news(
-            "Title does not appear to concern Liverpool.",
-            original_title,
-            source,
-            real_url
+        # Do NOT immediately reject.
+        # The article title may not contain Liverpool,
+        # while the actual article does.
+
+        logger.info(
+            "TITLE DOES NOT CONTAIN LIVERPOOL KEYWORD"
+        )
+
+        logger.info(
+            "CONTINUE: checking full article"
+        )
+
+    else:
+
+        logger.info(
+            "TITLE LIVERPOOL CHECK: PASS"
         )
 
     # -----------------------------------------------------
-    # FETCH ARTICLE
+    # 5. FETCH ARTICLE
     # -----------------------------------------------------
 
     article = fetch_article(
-        real_url
+        real_url,
+        rss_summary
     )
 
     if not article:
 
-        return reject_news(
-            "Could not fetch article.",
-            original_title,
-            source,
-            real_url
+        logger.info(
+            "REJECT: could not fetch article"
         )
 
+        return False
+
     title = (
-        article.get("title")
+        article["title"]
         or original_title
     )
 
-    body = clean_text(
-        article.get(
-            "body",
-            ""
-        )
-    )
-
-    author = clean_text(
-        article.get(
-            "author",
-            ""
-        )
-    )
-
-    logger.info(
-        "👤 AUTHOR: %s",
-        author or "Unknown"
-    )
+    body = article["body"]
 
     if len(body) < 250:
 
-        return reject_news(
-            f"Article body too short: "
-            f"{len(body)} characters.",
-            title,
-            source,
-            real_url
+        logger.info(
+            "REJECT: article body too short (%s chars)",
+            len(body)
         )
 
+        return False
+
     # -----------------------------------------------------
-    # FULL ARTICLE LIVERPOOL CHECK
+    # 6. FULL LIVERPOOL CHECK
     # -----------------------------------------------------
 
     combined = (
@@ -1728,16 +1742,18 @@ def process_news(entry):
         combined
     ):
 
-        return reject_news(
-            "Full article does not contain enough "
-            "Liverpool-related information.",
-            title,
-            source,
-            real_url
+        logger.info(
+            "REJECT: FULL ARTICLE NOT LIVERPOOL"
         )
 
+        return False
+
+    logger.info(
+        "LIVERPOOL RELEVANCE: PASS"
+    )
+
     # -----------------------------------------------------
-    # DUPLICATE
+    # 7. DUPLICATE
     # -----------------------------------------------------
 
     if news_was_posted(
@@ -1745,57 +1761,57 @@ def process_news(entry):
         real_url
     ):
 
-        return reject_news(
-            "Duplicate or very similar article "
-            "already posted.",
-            title,
-            source,
-            real_url
+        logger.info(
+            "REJECT: DUPLICATE NEWS"
         )
 
+        return False
+
+    logger.info(
+        "DUPLICATE CHECK: PASS"
+    )
+
     # -----------------------------------------------------
-    # POST GAP
+    # 8. POST GAP
     # -----------------------------------------------------
 
     if not can_post():
 
         logger.info(
-            "⏳ WAIT: Minimum post gap has not passed."
+            "WAIT: minimum post gap not reached"
         )
 
         return False
 
-    # -----------------------------------------------------
-    # AI
-    # -----------------------------------------------------
-
     logger.info(
-        "🤖 Sending article to AI editor..."
+        "POST GAP CHECK: PASS"
     )
+
+    # -----------------------------------------------------
+    # 9. AI
+    # -----------------------------------------------------
 
     edited = ai_edit_news(
         title,
         body,
         source,
-        real_url,
-        author
+        real_url
     )
 
     if not edited:
 
-        return reject_news(
-            "AI editor returned no valid response.",
-            title,
-            source,
-            real_url
+        logger.info(
+            "REJECT: AI returned nothing"
         )
+
+        return False
 
     decision = str(
         edited.get(
             "decision",
             ""
         )
-    ).strip().upper()
+    ).upper()
 
     reason = clean_text(
         edited.get(
@@ -1803,6 +1819,23 @@ def process_news(entry):
             ""
         )
     )
+
+    if decision != "POST":
+
+        logger.info(
+            "REJECT BY AI"
+        )
+
+        logger.info(
+            "AI REASON: %s",
+            reason
+        )
+
+        return False
+
+    # -----------------------------------------------------
+    # 10. CONFIDENCE
+    # -----------------------------------------------------
 
     try:
 
@@ -1818,39 +1851,20 @@ def process_news(entry):
         confidence = 0
 
     logger.info(
-        "🤖 AI DECISION: %s | "
-        "CONFIDENCE: %s | "
-        "REASON: %s",
-        decision,
-        confidence,
-        reason
+        "AI CONFIDENCE: %s",
+        confidence
     )
-
-    if decision != "POST":
-
-        return reject_news(
-            "AI rejected article: "
-            + (
-                reason
-                or "No reason provided."
-            ),
-            title,
-            source,
-            real_url
-        )
 
     if confidence < 85:
 
-        return reject_news(
-            f"AI confidence too low: "
-            f"{confidence}/100.",
-            title,
-            source,
-            real_url
+        logger.info(
+            "REJECT: confidence below 85"
         )
 
+        return False
+
     # -----------------------------------------------------
-    # AMHARIC
+    # 11. AMHARIC
     # -----------------------------------------------------
 
     headline = clean_text(
@@ -1872,15 +1886,18 @@ def process_news(entry):
         body_am
     ):
 
-        return reject_news(
-            "AI output failed Amharic validation.",
-            title,
-            source,
-            real_url
+        logger.info(
+            "REJECT: invalid Amharic output"
         )
 
+        return False
+
+    logger.info(
+        "AMHARIC CHECK: PASS"
+    )
+
     # -----------------------------------------------------
-    # IMAGE
+    # 12. IMAGE
     # -----------------------------------------------------
 
     image = None
@@ -1890,6 +1907,11 @@ def process_news(entry):
     )
 
     if image_url:
+
+        logger.info(
+            "IMAGE FOUND: %s",
+            image_url
+        )
 
         downloaded = download_image(
             image_url
@@ -1903,8 +1925,30 @@ def process_news(entry):
 
                 image = downloaded
 
+                logger.info(
+                    "IMAGE CHECK: NEW IMAGE"
+                )
+
+            else:
+
+                logger.info(
+                    "IMAGE CHECK: ALREADY USED"
+                )
+
+        else:
+
+            logger.info(
+                "IMAGE DOWNLOAD FAILED"
+            )
+
+    else:
+
+        logger.info(
+            "NO ARTICLE IMAGE"
+        )
+
     # -----------------------------------------------------
-    # CAPTION
+    # 13. CAPTION
     # -----------------------------------------------------
 
     caption = make_caption(
@@ -1912,14 +1956,18 @@ def process_news(entry):
         body_am
     )
 
+    logger.info(
+        "READY TO SEND TELEGRAM"
+    )
+
     # -----------------------------------------------------
-    # TELEGRAM
+    # 14. SEND
     # -----------------------------------------------------
 
     if image:
 
         logger.info(
-            "📸 Sending photo to @yegnaLiverpool..."
+            "TELEGRAM: sending PHOTO"
         )
 
         success = telegram_send_photo(
@@ -1936,10 +1984,14 @@ def process_news(entry):
 
             image_hash = image["hash"]
 
+            logger.info(
+                "TELEGRAM PHOTO: SUCCESS"
+            )
+
         else:
 
             logger.warning(
-                "Photo failed. Sending text instead..."
+                "PHOTO FAILED -> sending TEXT"
             )
 
             success = telegram_send_message(
@@ -1951,7 +2003,7 @@ def process_news(entry):
     else:
 
         logger.info(
-            "📝 Sending text to @yegnaLiverpool..."
+            "TELEGRAM: sending TEXT"
         )
 
         success = telegram_send_message(
@@ -1963,10 +2015,14 @@ def process_news(entry):
     if not success:
 
         logger.error(
-            "❌ Telegram post failed."
+            "TELEGRAM POST FAILED"
         )
 
         return False
+
+    # -----------------------------------------------------
+    # 15. SAVE
+    # -----------------------------------------------------
 
     save_post(
         headline,
@@ -1976,7 +2032,11 @@ def process_news(entry):
     )
 
     logger.info(
-        "✅ SUCCESS: POSTED TO @yegnaLiverpool"
+        "SUCCESS: POSTED TO @yegnaLiverpool"
+    )
+
+    logger.info(
+        "=================================================="
     )
 
     return True
@@ -2011,6 +2071,10 @@ def run_bot():
     conn = get_db()
     conn.close()
 
+    logger.info(
+        "DATABASE: READY"
+    )
+
     # -----------------------------------------------------
     # TELEGRAM CONNECTION
     # -----------------------------------------------------
@@ -2039,25 +2103,35 @@ def run_bot():
     )
 
     # -----------------------------------------------------
-    # OPTIONAL STARTUP TEST
+    # CHANNEL TEST
     # -----------------------------------------------------
 
     if SEND_STARTUP_TEST:
 
         logger.info(
-            "SEND_STARTUP_TEST=true"
+            "Testing @yegnaLiverpool..."
         )
 
-        if telegram_startup_test():
+        test_result = telegram_send_message(
+            "🤖 Liverpool News Bot ተገናኝቷል 🚀\n\n"
+            "ይህ የሙከራ መልዕክት ከ Bot-ው ወደ "
+            "@yegnaLiverpool ነው።"
+        )
+
+        if test_result:
 
             logger.info(
-                "STARTUP TEST SUCCESS ✅"
+                "CHANNEL TEST SUCCESS"
             )
 
         else:
 
-            logger.warning(
-                "STARTUP TEST FAILED"
+            raise RuntimeError(
+                "Bot connected to Telegram, "
+                "but cannot send messages to "
+                "@yegnaLiverpool. "
+                "Make sure the bot is ADMIN and "
+                "has Post Messages permission."
             )
 
     # -----------------------------------------------------
@@ -2069,17 +2143,17 @@ def run_bot():
         try:
 
             logger.info(
-                "=========================================="
+                "------------------------------------------"
             )
 
             logger.info(
-                "🔎 Searching for Liverpool news..."
+                "SEARCHING FOR LIVERPOOL NEWS..."
             )
 
             candidates = get_google_news()
 
             logger.info(
-                "Candidates found: %s",
+                "CANDIDATES FOUND: %s",
                 len(candidates)
             )
 
@@ -2093,7 +2167,16 @@ def run_bot():
 
             posted = False
 
-            for entry in candidates:
+            for index, entry in enumerate(
+                candidates,
+                start=1
+            ):
+
+                logger.info(
+                    "CANDIDATE %s/%s",
+                    index,
+                    len(candidates)
+                )
 
                 try:
 
@@ -2102,6 +2185,10 @@ def run_bot():
                     ):
 
                         posted = True
+
+                        logger.info(
+                            "NEWS POSTED - STOPPING THIS CYCLE"
+                        )
 
                         break
 
@@ -2115,12 +2202,8 @@ def run_bot():
             if not posted:
 
                 logger.info(
-                    "No suitable new Liverpool news."
+                    "NO SUITABLE NEW LIVERPOOL NEWS"
                 )
-
-            logger.info(
-                "Sleeping 5 minutes..."
-            )
 
         except Exception as e:
 
@@ -2128,6 +2211,10 @@ def run_bot():
                 "MAIN LOOP ERROR: %s",
                 e
             )
+
+        logger.info(
+            "Sleeping 5 minutes..."
+        )
 
         time.sleep(
             CHECK_EVERY
@@ -2158,4 +2245,3 @@ if __name__ == "__main__":
         )
 
         raise
-
