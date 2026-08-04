@@ -72,15 +72,27 @@ HEADERS = {
 # VALIDATION
 # =========================================================
 
+load_dotenv()
 if not BOT_TOKEN:
     raise RuntimeError(
         "BOT_TOKEN missing. Add BOT_TOKEN to your .env file."
     )
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN",
+    ""
+).strip()
 
-if not X_BEARER_TOKEN:
-    raise RuntimeError(
-        "X_BEARER_TOKEN missing. Add X_BEARER_TOKEN to your .env file."
-    )
+CHANNEL = os.getenv(
+    "CHANNEL",
+    "@yegnaLiverpool"
+).strip()
+
+X_USERNAME = os.getenv(
+    "X_USERNAME",
+    "LFC"
+).strip()
+
+LIVERPOOL_TEAM_ID = "364"
 
 
 # =========================================================
