@@ -1,41 +1,5 @@
 
 # =========================================================
-# Liverpool Official X + LIVE Bot
-#
-# OFFICIAL X:
-#   @LFC official posts
-#   Official X photos
-#   Original English captions
-#
-# LIVE:
-#   Amharic LIVE updates
-#   Player names -> English
-#   Club names -> English
-#   Goal
-#   Yellow Card
-#   Red Card
-#   Substitution
-#   VAR
-#   Half-time
-#   Full-time
-#   Score changes
-#   Duplicate protection
-#
-# Telegram:
-#   @yegnaLiverpool
-# =========================================================
-
-import os
-import time
-import hashlib
-import sqlite3
-import logging
-import requests
-
-from dotenv import load_dotenv
-
-
-# =========================================================
 # CONFIG
 # =========================================================
 
