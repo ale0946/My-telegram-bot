@@ -4,7 +4,9 @@ import hashlib
 import sqlite3
 import logging
 import requests
-
+import re
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 from dotenv import load_dotenv
 # =========================================================
 # CONFIG
@@ -295,7 +297,471 @@ def telegram_send_photo(
 # =========================================================
 # IMAGE DOWNLOAD
 # =========================================================
+# =========================================================
+# OFFICIAL LIVERPOOL WEBSITE PHOTOS
+# =========================================================
 
+LFC_NEWS_URL = "https://www.liverpoolfc.com/news"
+
+LFC_SITE_CHECK_EVERY = 5 * 60
+LFC_MIN_POST_GAP = 5 * 60
+
+
+def get_lfc_news_page():
+
+    try:
+        response = requests.get(
+            LFC_NEWS_URL,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            logger.warning(
+                "Liverpool website HTTP %s",
+                response.status_code,
+            )
+            return None
+
+        return response.text
+
+    except Exception as e:
+        logger.warning(
+            "Liverpool website error: %s",
+            e,
+        )
+        return None
+
+
+def extract_lfc_article_links(html):
+
+    if not html:
+        return []
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    links = []
+
+    for a in soup.find_all("a", href=True):
+
+        href = a.get("href", "").strip()
+
+        if not href:
+            continue
+
+        if href.startswith("/"):
+            href = urljoin(
+                "https://www.liverpoolfc.com",
+                href,
+            )
+
+        if not href.startswith(
+            "https://www.liverpoolfc.com/"
+        ):
+            continue
+
+        if "/news/" not in href:
+            continue
+
+        href = href.split("#")[0]
+
+        if href not in links:
+            links.append(href)
+
+    return links[:30]
+
+
+def is_lfc_photo_article(soup):
+
+    title = ""
+
+    if soup.title:
+        title = clean_text(
+            soup.title.get_text(" ", strip=True)
+        )
+
+    text = clean_text(
+        soup.get_text(" ", strip=True)
+    ).lower()
+
+    photo_words = [
+        "photos",
+        "photo gallery",
+        "gallery",
+        "in photos",
+        "training photos",
+        "pictures",
+    ]
+
+    if any(
+        word in title.lower()
+        for word in photo_words
+    ):
+        return True
+
+    if any(
+        word in text[:5000]
+        for word in photo_words
+    ):
+        return True
+
+    return False
+
+
+def extract_lfc_article(url):
+
+    try:
+
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser",
+        )
+
+        if not is_lfc_photo_article(soup):
+            return None
+
+        # -------------------------------------------------
+        # TITLE
+        # -------------------------------------------------
+
+        title = ""
+
+        h1 = soup.find("h1")
+
+        if h1:
+            title = clean_text(
+                h1.get_text(" ", strip=True)
+            )
+
+        if not title and soup.title:
+            title = clean_text(
+                soup.title.get_text(" ", strip=True)
+            )
+
+        # -------------------------------------------------
+        # ARTICLE DESCRIPTION / ENGLISH CAPTION
+        # -------------------------------------------------
+
+        description = ""
+
+        meta = soup.find(
+            "meta",
+            attrs={
+                "name": "description"
+            },
+        )
+
+        if meta:
+            description = clean_text(
+                meta.get("content", "")
+            )
+
+        # -------------------------------------------------
+        # IMAGES
+        # -------------------------------------------------
+
+        image_urls = []
+
+        for img in soup.find_all("img"):
+
+            src = (
+                img.get("src")
+                or img.get("data-src")
+                or img.get("data-lazy-src")
+            )
+
+            if not src:
+                continue
+
+            src = urljoin(
+                url,
+                src,
+            )
+
+            if not src.startswith(
+                "http"
+            ):
+                continue
+
+            lower = src.lower()
+
+            if any(
+                bad in lower
+                for bad in [
+                    "logo",
+                    "icon",
+                    "avatar",
+                    "placeholder",
+                ]
+            ):
+                continue
+
+            if src not in image_urls:
+                image_urls.append(src)
+
+        # -------------------------------------------------
+        # OPEN GRAPH IMAGE
+        # -------------------------------------------------
+
+        og = soup.find(
+            "meta",
+            property="og:image",
+        )
+
+        if og:
+
+            og_url = og.get(
+                "content",
+                "",
+            )
+
+            if og_url:
+
+                og_url = urljoin(
+                    url,
+                    og_url,
+                )
+
+                if og_url not in image_urls:
+                    image_urls.insert(
+                        0,
+                        og_url,
+                    )
+
+        if not title:
+            return None
+
+        if not image_urls:
+            return None
+
+        return {
+            "url": url,
+            "title": title,
+            "description": description,
+            "image_urls": image_urls[:15],
+        }
+
+    except Exception as e:
+
+        logger.warning(
+            "LFC article parse error: %s",
+            e,
+        )
+
+        return None
+
+
+def lfc_article_was_posted(url):
+
+    conn = get_db()
+
+    row = conn.execute(
+        """
+        SELECT tweet_id
+        FROM posted_x
+        WHERE tweet_url=?
+        LIMIT 1
+        """,
+        (url,),
+    ).fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
+def save_lfc_article(
+    url,
+    title,
+    image_hash="",
+):
+
+    conn = get_db()
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO posted_x
+        (
+            tweet_id,
+            tweet_text,
+            tweet_url,
+            image_hash,
+            posted_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            "lfc_site|" + hashlib.sha256(
+                url.encode("utf-8")
+            ).hexdigest(),
+            title,
+            url,
+            image_hash,
+            int(time.time()),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def make_lfc_site_caption(article):
+
+    title = clean_text(
+        article.get("title", "")
+    )
+
+    description = clean_text(
+        article.get("description", "")
+    )
+
+    # English text stays English.
+    lines = []
+
+    if title:
+        lines.append(title)
+
+    if description and description != title:
+        lines.append(description)
+
+    lines.append("")
+    lines.append("@yegnaLiverpool")
+
+    caption = "\n\n".join(lines)
+
+    return caption[:1024]
+
+
+def process_lfc_site_article(article):
+
+    if not article:
+        return False
+
+    url = article.get(
+        "url",
+        "",
+    )
+
+    if not url:
+        return False
+
+    if lfc_article_was_posted(url):
+        return False
+
+    caption = make_lfc_site_caption(
+        article
+    )
+
+    image_urls = article.get(
+        "image_urls",
+        [],
+    )
+
+    for image_url in image_urls:
+
+        image = download_image(
+            image_url
+        )
+
+        if not image:
+            continue
+
+        if image_was_used(
+            image["hash"]
+        ):
+            continue
+
+        success = telegram_send_photo(
+            image["bytes"],
+            caption,
+        )
+
+        if success:
+
+            save_image(
+                image["hash"],
+                image["url"],
+            )
+
+            save_lfc_article(
+                url,
+                article.get(
+                    "title",
+                    "",
+                ),
+                image["hash"],
+            )
+
+            logger.info(
+                "OFFICIAL LFC PHOTO SENT: %s",
+                article.get(
+                    "title",
+                    "",
+                ),
+            )
+
+            return True
+
+    return False
+
+
+def check_official_liverpool_site():
+
+    logger.info(
+        "Checking Official Liverpool website photos..."
+    )
+
+    html = get_lfc_news_page()
+
+    if not html:
+        return 0
+
+    links = extract_lfc_article_links(
+        html
+    )
+
+    if not links:
+        return 0
+
+    posted = 0
+
+    for url in links:
+
+        article = extract_lfc_article(
+            url
+        )
+
+        if not article:
+            continue
+
+        if process_lfc_site_article(
+            article
+        ):
+            posted += 1
+
+        # Don't flood Telegram.
+        if posted >= 1:
+            break
+
+    return posted
 def download_image(url):
 
     if not url:
