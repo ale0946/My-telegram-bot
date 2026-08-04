@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import time
@@ -5,13 +6,17 @@ import json
 import hashlib
 import logging
 import sqlite3
-from datetime import datetime, timezone, timedelta
-from urllib.parse import urljoin, urlparse
+
+from datetime import datetime, timezone
+from urllib.parse import urljoin
 
 import requests
+import feedparser
+
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
+
 
 # =========================================================
 # CONFIG
@@ -40,6 +45,11 @@ SEND_STARTUP_TEST = os.getenv(
     "true"
 ).lower() == "true"
 
+
+# =========================================================
+# HTTP
+# =========================================================
+
 USER_AGENT = (
     "Mozilla/5.0 "
     "(Linux; Android 10) "
@@ -53,6 +63,7 @@ HEADERS = {
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9"
 }
+
 
 # =========================================================
 # SOCIAL SOURCES
@@ -85,6 +96,7 @@ SOCIAL_SOURCES = [
     }
 ]
 
+
 # =========================================================
 # VALIDATION
 # =========================================================
@@ -95,9 +107,15 @@ if not BOT_TOKEN:
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY missing")
 
+
 client = Groq(
     api_key=GROQ_API_KEY
 )
+
+
+# =========================================================
+# LOGGING
+# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,6 +123,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("LiverpoolBot")
+
+
 # =========================================================
 # DATABASE
 # =========================================================
@@ -211,6 +231,7 @@ LIVERPOOL_KEYWORDS = [
     "mohamed salah",
 
     "van dijk",
+    "virgil van dijk",
     "virgil",
 
     "gakpo",
@@ -240,24 +261,17 @@ LIVERPOOL_KEYWORDS = [
 
 def is_liverpool_related(text):
 
-    text = clean_text(
-        text
-    ).lower()
+    text = clean_text(text).lower()
 
-    for word in LIVERPOOL_KEYWORDS:
-
-        if word in text:
-            return True
-
-    return False
+    return any(
+        word in text
+        for word in LIVERPOOL_KEYWORDS
+    )
 
 
 # =========================================================
 # SOCIAL RSS
 # =========================================================
-
-import feedparser
-
 
 def get_social_news():
 
@@ -276,118 +290,22 @@ def get_social_news():
                 source["rss"]
             )
 
-            for item in feed.entries:
+            for entry in feed.entries:
 
                 title = clean_text(
                     getattr(
-                        item,
+                        entry,
                         "title",
                         ""
                     )
                 )
 
-                link = getattr(
-                    item,
-                    "link",
-                    ""
-                )
-
                 summary = clean_text(
                     getattr(
-                        item,
+                        entry,
                         "summary",
                         ""
                     )
-                )
-
-                if not title:
-                    continue
-
-                if not is_liverpool_related(
-                    title + " " + summary
-                ):
-                    continue
-
-                news.append({
-
-                    "title": title,
-
-                    "summary": summary,
-
-                    "url": link,
-
-                    "source_title": source["name"],
-
-                    "published": getattr(
-                        item,
-                        "published_parsed",
-                        None
-                    )
-
-                })
-
-        except Exception as e:
-
-            logger.warning(
-                "%s failed: %s",
-                source["name"],
-                e
-            )
-
-    logger.info(
-        "SOCIAL POSTS FOUND: %s",
-        len(news)
-    )
-
-    return news
-    SOCIAL_SOURCES = [
-    {
-        "name": "Fabrizio Romano",
-        "rss": "https://rsshub.app/twitter/user/FabrizioRomano"
-    },
-    {
-        "name": "Anfield Edition",
-        "rss": "https://rsshub.app/twitter/user/AnfieldEdition"
-    },
-    {
-        "name": "Anfield Watch",
-        "rss": "https://rsshub.app/twitter/user/AnfieldWatch"
-    },
-    {
-        "name": "DaveOCKOP",
-        "rss": "https://rsshub.app/twitter/user/DaveOCKOP"
-    },
-    {
-        "name": "The Anfield Talk",
-        "rss": "https://rsshub.app/twitter/user/TheAnfieldTalk"
-    },
-    {
-        "name": "Empire of the Kop",
-        "rss": "https://rsshub.app/twitter/user/empireofthekop"
-    }
-]
-
-
-def get_social_news():
-
-    news = []
-
-    for source in SOCIAL_SOURCES:
-
-        try:
-
-            logger.info("Checking %s", source["name"])
-
-            feed = feedparser.parse(source["rss"])
-
-            for entry in feed.entries:
-
-                title = clean_text(
-                    getattr(entry, "title", "")
-                )
-
-                summary = clean_text(
-                    getattr(entry, "summary", "")
                 )
 
                 link = getattr(
@@ -399,8 +317,12 @@ def get_social_news():
                 if not title:
                     continue
 
-                if not is_liverpool_related(
+                combined_text = (
                     title + " " + summary
+                )
+
+                if not is_liverpool_related(
+                    combined_text
                 ):
                     continue
 
@@ -424,6 +346,7 @@ def get_social_news():
                 e
             )
 
+    # Remove duplicate titles
     unique = {}
 
     for item in news:
@@ -432,7 +355,8 @@ def get_social_news():
             normalize(item["title"])
         )
 
-        unique[key] = item
+        if key not in unique:
+            unique[key] = item
 
     logger.info(
         "SOCIAL NEWS FOUND: %s",
@@ -440,11 +364,17 @@ def get_social_news():
     )
 
     return list(unique.values())
-    # =========================================================
+
+
+# =========================================================
 # TELEGRAM API
 # =========================================================
 
-def telegram_api(method, data=None, files=None):
+def telegram_api(
+    method,
+    data=None,
+    files=None
+):
 
     url = (
         f"https://api.telegram.org/bot"
@@ -453,24 +383,30 @@ def telegram_api(method, data=None, files=None):
 
     try:
 
-        r = requests.post(
+        response = requests.post(
             url,
             data=data,
             files=files,
             timeout=40
         )
 
-        result = r.json()
+        result = response.json()
 
         if not result.get("ok"):
 
-            logger.error(result)
+            logger.error(
+                "Telegram API error: %s",
+                result
+            )
 
         return result
 
     except Exception as e:
 
-        logger.error(e)
+        logger.error(
+            "Telegram request failed: %s",
+            e
+        )
 
         return {
             "ok": False
@@ -479,21 +415,22 @@ def telegram_api(method, data=None, files=None):
 
 def telegram_send_message(text):
 
-    return telegram_api(
+    result = telegram_api(
 
         "sendMessage",
 
         data={
-
             "chat_id": CHANNEL,
-
             "text": text,
-
             "disable_web_page_preview": True
-
         }
 
-    ).get("ok", False)
+    )
+
+    return result.get(
+        "ok",
+        False
+    )
 
 
 def telegram_send_photo(
@@ -501,33 +438,29 @@ def telegram_send_photo(
     caption
 ):
 
-    return telegram_api(
+    result = telegram_api(
 
         "sendPhoto",
 
         data={
-
             "chat_id": CHANNEL,
-
             "caption": caption
-
         },
 
         files={
-
             "photo": (
-
                 "image.jpg",
-
                 image,
-
                 "image/jpeg"
-
             )
-
         }
 
-    ).get("ok", False)
+    )
+
+    return result.get(
+        "ok",
+        False
+    )
 
 
 # =========================================================
@@ -537,42 +470,50 @@ def telegram_send_photo(
 def download_image(url):
 
     if not url:
-
         return None
 
     try:
 
-        r = requests.get(
-
+        response = requests.get(
             url,
-
             headers=HEADERS,
-
             timeout=25
-
         )
 
-        if r.status_code != 200:
-
+        if response.status_code != 200:
             return None
 
-        if len(r.content) < 15000:
+        content_type = (
+            response.headers
+            .get("content-type", "")
+            .lower()
+        )
 
+        if (
+            "image" not in content_type
+            and not url.lower().endswith(
+                (".jpg", ".jpeg", ".png", ".webp")
+            )
+        ):
+            return None
+
+        if len(response.content) < 15000:
             return None
 
         return {
-
-            "bytes": r.content,
-
+            "bytes": response.content,
             "hash": hashlib.sha256(
-                r.content
+                response.content
             ).hexdigest(),
-
             "url": url
-
         }
 
-    except:
+    except Exception as e:
+
+        logger.warning(
+            "Image download failed: %s",
+            e
+        )
 
         return None
 
@@ -583,14 +524,19 @@ def download_image(url):
 
 def image_used(image_hash):
 
+    if not image_hash:
+        return False
+
     conn = get_db()
 
     row = conn.execute(
-
-        "SELECT image_hash FROM used_images WHERE image_hash=?",
-
+        """
+        SELECT image_hash
+        FROM used_images
+        WHERE image_hash=?
+        LIMIT 1
+        """,
         (image_hash,)
-
     ).fetchone()
 
     conn.close()
@@ -598,43 +544,49 @@ def image_used(image_hash):
     return row is not None
 
 
-def save_image(image_hash, url):
+def save_image(
+    image_hash,
+    url
+):
+
+    if not image_hash:
+        return
 
     conn = get_db()
 
     conn.execute(
-
         """
-
         INSERT OR IGNORE INTO used_images
-
-        VALUES(?,?,?)
-
-        """,
-
         (
-
             image_hash,
-
-            url,
-
-            int(time.time())
-
+            image_url,
+            used_at
         )
-
+        VALUES(?,?,?)
+        """,
+        (
+            image_hash,
+            url,
+            int(time.time())
+        )
     )
 
     conn.commit()
-
     conn.close()
-    # =========================================================
+
+
+# =========================================================
 # NEWS DATABASE
 # =========================================================
 
-def news_was_posted(title, url):
+def news_was_posted(
+    title,
+    url
+):
 
     fingerprint = make_hash(
-        normalize(title) + normalize(url)
+        normalize(title)
+        + normalize(url)
     )
 
     conn = get_db()
@@ -662,7 +614,8 @@ def save_post(
 ):
 
     fingerprint = make_hash(
-        normalize(title) + normalize(url)
+        normalize(title)
+        + normalize(url)
     )
 
     conn = get_db()
@@ -678,10 +631,7 @@ def save_post(
             image_hash,
             posted_at
         )
-        VALUES
-        (
-            ?,?,?,?,?,?
-        )
+        VALUES(?,?,?,?,?,?)
         """,
         (
             fingerprint,
@@ -694,7 +644,6 @@ def save_post(
     )
 
     conn.commit()
-
     conn.close()
 
 
@@ -720,10 +669,12 @@ def can_post():
     if not row:
         return True
 
-    return (
+    elapsed = (
         time.time()
         - int(row[0])
-    ) >= MIN_POST_GAP
+    )
+
+    return elapsed >= MIN_POST_GAP
 
 
 # =========================================================
@@ -731,6 +682,9 @@ def can_post():
 # =========================================================
 
 def fetch_article(url):
+
+    if not url:
+        return None
 
     try:
 
@@ -750,68 +704,89 @@ def fetch_article(url):
 
         paragraphs = []
 
-        for p in soup.find_all("p"):
+        for paragraph in soup.find_all("p"):
 
             text = clean_text(
-                p.get_text()
+                paragraph.get_text()
             )
 
             if len(text) >= 40:
-
                 paragraphs.append(text)
 
-        body = "\n".join(paragraphs)
+        body = "\n".join(
+            paragraphs
+        )
 
-        image = None
+        image_url = None
 
-        og = soup.find(
+        og_image = soup.find(
             "meta",
             property="og:image"
         )
 
-        if og:
+        if og_image:
 
-            image = og.get(
+            image_url = og_image.get(
                 "content"
             )
 
+        title = ""
+
+        if soup.title:
+            title = clean_text(
+                soup.title.get_text()
+            )
+
         return {
-
-            "title": clean_text(
-                soup.title.text
-                if soup.title else ""
-            ),
-
+            "title": title,
             "body": body[:14000],
-
-            "image_url": image,
-
+            "image_url": image_url,
             "url": response.url
-
         }
 
     except Exception as e:
 
-        logger.warning(e)
+        logger.warning(
+            "Article fetch failed: %s",
+            e
+        )
 
         return None
- # =========================================================
+
+
+# =========================================================
 # GROQ AI
 # =========================================================
 
 NEWS_EDITOR_PROMPT = """
 አንተ የLiverpool FC የአማርኛ ስፖርት ዜና አርታዒ ነህ።
 
-የተሰጠህን መረጃ ብቻ ተጠቅመህ አጭር፣
-ትክክለኛ እና ተፈጥሯዊ የአማርኛ ዜና አዘጋጅ።
+የተሰጠህን መረጃ ብቻ ተጠቅመህ
+አጭር፣ ትክክለኛ፣ ተፈጥሯዊ እና
+ሙያዊ የአማርኛ ዜና አዘጋጅ።
+
+ጥብቅ ህጎች፦
+
+1. ከተሰጠው መረጃ ውጭ ምንም ነገር አትፍጠር።
+2. ስም፣ ቀን፣ ዋጋ፣ የዝውውር መጠን፣ ጉዳት፣
+   ውል ወይም ጥቅስ አትጨምር።
+3. ዜናው Liverpool FCን በግልጽ የሚመለከት
+   ካልሆነ decision = "REJECT" አድርግ።
+4. እርግጠኛ ያልሆነ መረጃ ካለ እንደተረጋገጠ
+   አታቀርበው።
+5. የዜናውን ዋና ነጥብ ብቻ አስቀምጥ።
+6. በአማርኛ ብቻ ጻፍ።
+7. የእንግሊዝኛ headline አትጨምር።
+8. Markdown, hashtags ወይም የማያስፈልጉ
+   separators አትጠቀም።
 
 JSON ብቻ መልስ።
 
 {
- "decision":"POST",
- "headline":"",
- "body":"",
- "confidence":95
+    "decision": "POST",
+    "headline": "",
+    "body": "",
+    "confidence": 95
 }
 """
 
@@ -824,7 +799,6 @@ def ai_edit_news(
 ):
 
     prompt = f"""
-
 SOURCE:
 {source}
 
@@ -836,7 +810,6 @@ ARTICLE:
 
 URL:
 {url}
-
 """
 
     try:
@@ -867,18 +840,23 @@ URL:
 
         )
 
-        return json.loads(
-
+        content = (
             completion
             .choices[0]
             .message
             .content
+        )
 
+        return json.loads(
+            content
         )
 
     except Exception as e:
 
-        logger.error(e)
+        logger.error(
+            "Groq error: %s",
+            e
+        )
 
         return None
 
@@ -892,23 +870,30 @@ def make_caption(
     body
 ):
 
-    caption = (
-
+    headline = clean_text(
         headline
+    )
 
-        + "\n\n"
+    body = clean_text(
+        body
+    )
 
-        + body
-
-        + "\n\n@yegnaLiverpool"
-
+    caption = (
+        f"{headline}\n\n"
+        f"{body}\n\n"
+        f"@yegnaLiverpool"
     )
 
     if len(caption) > 1024:
 
-        caption = caption[:1020] + "..."
+        caption = (
+            caption[:1020]
+            + "..."
+        )
 
     return caption
+
+
 # =========================================================
 # PROCESS NEWS
 # =========================================================
@@ -916,12 +901,18 @@ def make_caption(
 def process_news(entry):
 
     title = clean_text(
-        entry["title"]
+        entry.get("title", "")
     )
 
-    url = entry["url"]
+    url = entry.get(
+        "url",
+        ""
+    )
 
-    source = entry["source_title"]
+    source = entry.get(
+        "source_title",
+        ""
+    )
 
     summary = clean_text(
         entry.get(
@@ -931,7 +922,11 @@ def process_news(entry):
     )
 
     if not title:
+        return False
 
+    if not is_liverpool_related(
+        title + " " + summary
+    ):
         return False
 
     if news_was_posted(
@@ -940,7 +935,7 @@ def process_news(entry):
     ):
 
         logger.info(
-            "Duplicate"
+            "Duplicate news skipped."
         )
 
         return False
@@ -948,7 +943,7 @@ def process_news(entry):
     if not can_post():
 
         logger.info(
-            "Waiting post gap"
+            "Minimum post gap not reached."
         )
 
         return False
@@ -959,24 +954,33 @@ def process_news(entry):
 
     if article:
 
-        body = article["body"]
+        body = clean_text(
+            article.get(
+                "body",
+                ""
+            )
+        )
 
-        image_url = article["image_url"]
+        image_url = article.get(
+            "image_url"
+        )
 
         final_title = (
-            article["title"]
+            article.get("title")
             or title
         )
 
     else:
 
         body = summary
-
         image_url = None
-
         final_title = title
 
     if len(body) < 150:
+
+        logger.info(
+            "Article too short. Skipping."
+        )
 
         return False
 
@@ -1000,19 +1004,63 @@ def process_news(entry):
         "decision"
     ) != "POST":
 
+        logger.info(
+            "AI rejected news."
+        )
+
+        return False
+
+    try:
+
+        confidence = float(
+            edited.get(
+                "confidence",
+                0
+            )
+        )
+
+    except:
+
+        confidence = 0
+
+    if confidence < 75:
+
+        logger.info(
+            "AI confidence too low: %s",
+            confidence
+        )
+
+        return False
+
+    headline = clean_text(
+        edited.get(
+            "headline",
+            ""
+        )
+    )
+
+    edited_body = clean_text(
+        edited.get(
+            "body",
+            ""
+        )
+    )
+
+    if not headline or not edited_body:
+
         return False
 
     caption = make_caption(
-
-        edited["headline"],
-
-        edited["body"]
-
+        headline,
+        edited_body
     )
 
     image_hash = ""
-
     success = False
+
+    # =====================================================
+    # SEND IMAGE
+    # =====================================================
 
     if image_url:
 
@@ -1046,17 +1094,25 @@ def process_news(entry):
 
                     image_hash = image["hash"]
 
+    # =====================================================
+    # SEND TEXT IF IMAGE FAILED
+    # =====================================================
+
     if not success:
 
         success = telegram_send_message(
             caption
         )
 
+    # =====================================================
+    # SAVE POST
+    # =====================================================
+
     if success:
 
         save_post(
 
-            edited["headline"],
+            headline,
 
             url,
 
@@ -1067,25 +1123,20 @@ def process_news(entry):
         )
 
         logger.info(
-            "Posted successfully."
+            "Posted successfully: %s",
+            headline
         )
 
         return True
 
-    return False
-    # =========================================================
-# MAIN LOOP
-# =========================================================
-
-def run_bot():
-
-    logger.info(
-        "===================================="
+    logger.error(
+        "Telegram posting failed."
     )
 
-    logger.info(
-        "Liverpool
-    # =========================================================
+    return False
+
+
+# =========================================================
 # MAIN LOOP
 # =========================================================
 
@@ -1100,22 +1151,48 @@ def run_bot():
     )
 
     logger.info(
-        "Channel : %s",
+        "Channel: %s",
         CHANNEL
+    )
+
+    logger.info(
+        "Check interval: %s seconds",
+        CHECK_EVERY
     )
 
     logger.info(
         "=" * 60
     )
 
+    # Create database
     conn = get_db()
     conn.close()
 
+    # =====================================================
+    # STARTUP TEST
+    # =====================================================
+
     if SEND_STARTUP_TEST:
 
-        telegram_send_message(
+        success = telegram_send_message(
             "🤖 Liverpool News Bot ተጀምሯል ✅"
         )
+
+        if success:
+
+            logger.info(
+                "Startup test sent successfully."
+            )
+
+        else:
+
+            logger.warning(
+                "Startup test failed."
+            )
+
+    # =====================================================
+    # LOOP
+    # =====================================================
 
     while True:
 
@@ -1127,9 +1204,10 @@ def run_bot():
 
             news = get_social_news()
 
+            # Newest first
             news.sort(
-                key=lambda x: (
-                    x.get("published")
+                key=lambda item: (
+                    item.get("published")
                     or time.gmtime(0)
                 ),
                 reverse=True
@@ -1139,30 +1217,39 @@ def run_bot():
 
             for item in news:
 
+                if posted >= MAX_POSTS_PER_CYCLE:
+                    break
+
                 try:
 
                     if process_news(item):
 
                         posted += 1
 
-                        if posted >= MAX_POSTS_PER_CYCLE:
-
-                            break
-
                 except Exception as e:
 
-                    logger.exception(e)
+                    logger.exception(
+                        "News processing error: %s",
+                        e
+                    )
 
             if posted == 0:
 
                 logger.info(
-                    "No new Liverpool news."
+                    "No new Liverpool news posted."
+                )
+
+            else:
+
+                logger.info(
+                    "Posted %s news item(s).",
+                    posted
                 )
 
         except Exception as e:
 
             logger.exception(
-                "Main Loop Error: %s",
+                "Main loop error: %s",
                 e
             )
 
@@ -1189,15 +1276,20 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         logger.info(
-            "Bot stopped."
+            "Bot stopped by user."
         )
 
     except Exception as e:
 
         logger.exception(
-            "Fatal Error: %s",
+            "Fatal error: %s",
             e
         )
 
         raise
-    # ===== END OF FILE =====
+
+
+# =========================================================
+# END OF FILE
+# =========================================================
+```
