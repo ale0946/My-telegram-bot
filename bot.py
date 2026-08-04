@@ -2807,3 +2807,245 @@ if __name__ == "__main__":
         )
 
         raise
+       # =========================================================
+# DUPLICATE POST + PHOTO/CAPTION PROTECTION
+# =========================================================
+
+import re
+import hashlib
+from difflib import SequenceMatcher
+
+
+def normalize_text(text):
+    if not text:
+        return ""
+
+    text = text.lower()
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
+
+
+def text_hash(text):
+    normalized = normalize_text(text)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def similar_text(text1, text2, threshold=0.82):
+    a = normalize_text(text1)
+    b = normalize_text(text2)
+
+    if not a or not b:
+        return False
+
+    if a == b:
+        return True
+
+    return SequenceMatcher(None, a, b).ratio() >= threshold
+
+
+def is_duplicate_post(db, headline, body):
+    """
+    Prevents the same/similar Liverpool news from being posted again.
+    Checks both headline and article body.
+    """
+
+    current_text = f"{headline} {body}"
+    current_hash = text_hash(current_text)
+
+    try:
+        rows = db.execute(
+            """
+            SELECT title, content, fingerprint
+            FROM posted_news
+            ORDER BY id DESC
+            LIMIT 100
+            """
+        ).fetchall()
+    except Exception:
+        return False
+
+    for row in rows:
+        old_title = row[0] or ""
+        old_body = row[1] or ""
+        old_hash = row[2] or ""
+
+        # Exact fingerprint match
+        if old_hash and old_hash == current_hash:
+            return True
+
+        # Same/similar headline
+        if similar_text(headline, old_title, 0.85):
+            return True
+
+        # Same/similar complete content
+        if similar_text(current_text, f"{old_title} {old_body}", 0.84):
+            return True
+
+    return False
+
+
+def save_post(db, headline, body):
+    """
+    Save only successfully published posts.
+    """
+
+    fingerprint = text_hash(f"{headline} {body}")
+
+    try:
+        db.execute(
+            """
+            INSERT INTO posted_news
+            (title, content, fingerprint, created_at)
+            VALUES (?, ?, ?, datetime('now'))
+            """,
+            (headline, body, fingerprint)
+        )
+        db.commit()
+    except Exception:
+        pass
+
+
+def find_valid_liverpool_photo(article_image, article_url, title):
+    """
+    Use the article's own Liverpool photo.
+    Never use a random unrelated photo.
+    """
+
+    if not article_image:
+        return None
+
+    image_url = article_image.strip()
+
+    if not image_url.startswith(("http://", "https://")):
+        return None
+
+    bad_words = [
+        "logo",
+        "avatar",
+        "icon",
+        "favicon",
+        "placeholder",
+        "default",
+        "banner-ad",
+        "advert"
+    ]
+
+    image_lower = image_url.lower()
+
+    for word in bad_words:
+        if word in image_lower:
+            return None
+
+    # The image must come from the article itself.
+    if article_url:
+        article_domain = re.sub(
+            r"^https?://(www\.)?",
+            "",
+            article_url.lower()
+        ).split("/")[0]
+
+        image_domain = re.sub(
+            r"^https?://(www\.)?",
+            "",
+            image_url.lower()
+        ).split("/")[0]
+
+        # Allow external image CDNs commonly used by news sites.
+        allowed_external = [
+            "cloudinary.com",
+            "images.ctfassets.net",
+            "akamaized.net",
+            "wp.com"
+        ]
+
+        if (
+            article_domain not in image_domain
+            and not any(x in image_domain for x in allowed_external)
+        ):
+            return None
+
+    return image_url
+
+
+def build_telegram_caption(headline, body):
+    """
+    Photo caption: headline + related Amharic news text.
+    """
+
+    headline = (headline or "").strip()
+    body = (body or "").strip()
+
+    caption = f"🔴 {headline}\n\n{body}"
+
+    # Telegram photo caption limit
+    if len(caption) > 1024:
+        caption = caption[:1020] + "..."
+
+    return caption
+
+
+def post_liverpool_news(db, headline, body, article_image=None, article_url=None):
+    """
+    Final protection before Telegram posting.
+    """
+
+    # -----------------------------------------------------
+    # 1. STOP DUPLICATES
+    # -----------------------------------------------------
+
+    if is_duplicate_post(db, headline, body):
+        logging.info("⛔ Duplicate news skipped: %s", headline)
+        return False
+
+    # -----------------------------------------------------
+    # 2. BUILD CAPTION
+    # -----------------------------------------------------
+
+    caption = build_telegram_caption(headline, body)
+
+    # -----------------------------------------------------
+    # 3. VALIDATE ARTICLE PHOTO
+    # -----------------------------------------------------
+
+    photo = find_valid_liverpool_photo(
+        article_image,
+        article_url,
+        headline
+    )
+
+    # -----------------------------------------------------
+    # 4. SEND PHOTO + RELATED TEXT
+    # -----------------------------------------------------
+
+    if photo:
+        success = telegram_send_photo(
+            photo,
+            caption
+        )
+    else:
+        success = telegram_send_message(
+            caption
+        )
+
+    # -----------------------------------------------------
+    # 5. SAVE ONLY AFTER SUCCESSFUL POST
+    # -----------------------------------------------------
+
+    if success:
+        save_post(
+            db,
+            headline,
+            body
+        )
+
+        logging.info(
+            "✅ Liverpool post published: %s",
+            headline
+        )
+
+        return True
+
+    return False 
