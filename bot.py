@@ -1,3 +1,4 @@
+```python
 import os
 import time
 import hashlib
@@ -5,19 +6,19 @@ import sqlite3
 import logging
 import requests
 import re
+
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from dotenv import load_dotenv
+
+
 # =========================================================
 # CONFIG
 # =========================================================
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN",
-    ""
-).strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 CHANNEL = os.getenv(
     "CHANNEL",
@@ -38,12 +39,24 @@ X_USERNAME = os.getenv(
 LIVERPOOL_TEAM_ID = "364"
 ESPN_TEAM_ID = "364"
 
-# Checks
+# =========================================================
+# CHECK INTERVALS
+# =========================================================
+
 X_CHECK_EVERY = 60
 LIVE_CHECK_EVERY = 60
 
-# Minimum gap between official X posts
-X_MIN_POST_GAP = 5 * 60
+# Official Liverpool website check
+LFC_SITE_CHECK_EVERY = 5 * 60
+
+# =========================================================
+# IMPORTANT:
+# ONE NORMAL POST EVERY 15 MINUTES
+# X + OFFICIAL LIVERPOOL WEBSITE SHARE THIS LIMIT
+# LIVE EVENTS ARE NOT BLOCKED BY THIS TIMER
+# =========================================================
+
+NORMAL_POST_MIN_GAP = 15 * 60
 
 # Database
 DB_FILE = "liverpool_bot.db"
@@ -60,7 +73,8 @@ REQUEST_TIMEOUT = 30
 
 USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 10) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "AppleWebKit/537.36 "
+    "(KHTML, like Gecko) "
     "Chrome/150.0 Mobile Safari/537.36"
 )
 
@@ -74,27 +88,10 @@ HEADERS = {
 # VALIDATION
 # =========================================================
 
-load_dotenv()
 if not BOT_TOKEN:
     raise RuntimeError(
         "BOT_TOKEN missing. Add BOT_TOKEN to your .env file."
     )
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN",
-    ""
-).strip()
-
-CHANNEL = os.getenv(
-    "CHANNEL",
-    "@yegnaLiverpool"
-).strip()
-
-X_USERNAME = os.getenv(
-    "X_USERNAME",
-    "LFC"
-).strip()
-
-LIVERPOOL_TEAM_ID = "364"
 
 
 # =========================================================
@@ -106,9 +103,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
-logger = logging.getLogger(
-    "LiverpoolBot"
-)
+logger = logging.getLogger("LiverpoolBot")
 
 
 # =========================================================
@@ -295,327 +290,57 @@ def telegram_send_photo(
 
 
 # =========================================================
-# IMAGE DOWNLOAD
-# =========================================================
-# =========================================================
-# OFFICIAL LIVERPOOL WEBSITE PHOTOS
+# DATABASE STATE HELPERS
 # =========================================================
 
-LFC_NEWS_URL = "https://www.liverpoolfc.com/news"
-
-LFC_SITE_CHECK_EVERY = 5 * 60
-LFC_MIN_POST_GAP = 5 * 60
-
-
-def get_lfc_news_page():
-
-    try:
-        response = requests.get(
-            LFC_NEWS_URL,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "text/html",
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        if response.status_code != 200:
-            logger.warning(
-                "Liverpool website HTTP %s",
-                response.status_code,
-            )
-            return None
-
-        return response.text
-
-    except Exception as e:
-        logger.warning(
-            "Liverpool website error: %s",
-            e,
-        )
-        return None
-
-
-def extract_lfc_article_links(html):
-
-    if not html:
-        return []
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    links = []
-
-    for a in soup.find_all("a", href=True):
-
-        href = a.get("href", "").strip()
-
-        if not href:
-            continue
-
-        if href.startswith("/"):
-            href = urljoin(
-                "https://www.liverpoolfc.com",
-                href,
-            )
-
-        if not href.startswith(
-            "https://www.liverpoolfc.com/"
-        ):
-            continue
-
-        if "/news/" not in href:
-            continue
-
-        href = href.split("#")[0]
-
-        if href not in links:
-            links.append(href)
-
-    return links[:30]
-
-
-def is_lfc_photo_article(soup):
-
-    title = ""
-
-    if soup.title:
-        title = clean_text(
-            soup.title.get_text(" ", strip=True)
-        )
-
-    text = clean_text(
-        soup.get_text(" ", strip=True)
-    ).lower()
-
-    photo_words = [
-        "photos",
-        "photo gallery",
-        "gallery",
-        "in photos",
-        "training photos",
-        "pictures",
-    ]
-
-    if any(
-        word in title.lower()
-        for word in photo_words
-    ):
-        return True
-
-    if any(
-        word in text[:5000]
-        for word in photo_words
-    ):
-        return True
-
-    return False
-
-
-def extract_lfc_article(url):
-
-    try:
-
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "text/html",
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        if response.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser",
-        )
-
-        if not is_lfc_photo_article(soup):
-            return None
-
-        # -------------------------------------------------
-        # TITLE
-        # -------------------------------------------------
-
-        title = ""
-
-        h1 = soup.find("h1")
-
-        if h1:
-            title = clean_text(
-                h1.get_text(" ", strip=True)
-            )
-
-        if not title and soup.title:
-            title = clean_text(
-                soup.title.get_text(" ", strip=True)
-            )
-
-        # -------------------------------------------------
-        # ARTICLE DESCRIPTION / ENGLISH CAPTION
-        # -------------------------------------------------
-
-        description = ""
-
-        meta = soup.find(
-            "meta",
-            attrs={
-                "name": "description"
-            },
-        )
-
-        if meta:
-            description = clean_text(
-                meta.get("content", "")
-            )
-
-        # -------------------------------------------------
-        # IMAGES
-        # -------------------------------------------------
-
-        image_urls = []
-
-        for img in soup.find_all("img"):
-
-            src = (
-                img.get("src")
-                or img.get("data-src")
-                or img.get("data-lazy-src")
-            )
-
-            if not src:
-                continue
-
-            src = urljoin(
-                url,
-                src,
-            )
-
-            if not src.startswith(
-                "http"
-            ):
-                continue
-
-            lower = src.lower()
-
-            if any(
-                bad in lower
-                for bad in [
-                    "logo",
-                    "icon",
-                    "avatar",
-                    "placeholder",
-                ]
-            ):
-                continue
-
-            if src not in image_urls:
-                image_urls.append(src)
-
-        # -------------------------------------------------
-        # OPEN GRAPH IMAGE
-        # -------------------------------------------------
-
-        og = soup.find(
-            "meta",
-            property="og:image",
-        )
-
-        if og:
-
-            og_url = og.get(
-                "content",
-                "",
-            )
-
-            if og_url:
-
-                og_url = urljoin(
-                    url,
-                    og_url,
-                )
-
-                if og_url not in image_urls:
-                    image_urls.insert(
-                        0,
-                        og_url,
-                    )
-
-        if not title:
-            return None
-
-        if not image_urls:
-            return None
-
-        return {
-            "url": url,
-            "title": title,
-            "description": description,
-            "image_urls": image_urls[:15],
-        }
-
-    except Exception as e:
-
-        logger.warning(
-            "LFC article parse error: %s",
-            e,
-        )
-
-        return None
-
-
-def lfc_article_was_posted(url):
+def get_state(
+    key,
+    default=""
+):
 
     conn = get_db()
 
     row = conn.execute(
         """
-        SELECT tweet_id
-        FROM posted_x
-        WHERE tweet_url=?
+        SELECT value
+        FROM bot_state
+        WHERE key=?
         LIMIT 1
         """,
-        (url,),
+        (key,),
     ).fetchone()
 
     conn.close()
 
-    return row is not None
+    return (
+        row[0]
+        if row
+        else default
+    )
 
 
-def save_lfc_article(
-    url,
-    title,
-    image_hash="",
+def set_state(
+    key,
+    value
 ):
 
     conn = get_db()
 
     conn.execute(
         """
-        INSERT OR IGNORE INTO posted_x
-        (
-            tweet_id,
-            tweet_text,
-            tweet_url,
-            image_hash,
-            posted_at
+        INSERT INTO bot_state(
+            key,
+            value
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?)
+
+        ON CONFLICT(key)
+        DO UPDATE SET
+            value=excluded.value
         """,
         (
-            "lfc_site|" + hashlib.sha256(
-                url.encode("utf-8")
-            ).hexdigest(),
-            title,
-            url,
-            image_hash,
-            int(time.time()),
+            key,
+            str(value)
         ),
     )
 
@@ -623,145 +348,46 @@ def save_lfc_article(
     conn.close()
 
 
-def make_lfc_site_caption(article):
+# =========================================================
+# GLOBAL NORMAL POST LIMIT
+# =========================================================
 
-    title = clean_text(
-        article.get("title", "")
+def can_post_normal():
+
+    last_post = get_state(
+        "last_normal_post_time",
+        "0"
     )
 
-    description = clean_text(
-        article.get("description", "")
-    )
+    try:
 
-    # English text stays English.
-    lines = []
-
-    if title:
-        lines.append(title)
-
-    if description and description != title:
-        lines.append(description)
-
-    lines.append("")
-    lines.append("@yegnaLiverpool")
-
-    caption = "\n\n".join(lines)
-
-    return caption[:1024]
-
-
-def process_lfc_site_article(article):
-
-    if not article:
-        return False
-
-    url = article.get(
-        "url",
-        "",
-    )
-
-    if not url:
-        return False
-
-    if lfc_article_was_posted(url):
-        return False
-
-    caption = make_lfc_site_caption(
-        article
-    )
-
-    image_urls = article.get(
-        "image_urls",
-        [],
-    )
-
-    for image_url in image_urls:
-
-        image = download_image(
-            image_url
+        last_post = int(
+            last_post
         )
 
-        if not image:
-            continue
+    except Exception:
 
-        if image_was_used(
-            image["hash"]
-        ):
-            continue
+        last_post = 0
 
-        success = telegram_send_photo(
-            image["bytes"],
-            caption,
-        )
-
-        if success:
-
-            save_image(
-                image["hash"],
-                image["url"],
-            )
-
-            save_lfc_article(
-                url,
-                article.get(
-                    "title",
-                    "",
-                ),
-                image["hash"],
-            )
-
-            logger.info(
-                "OFFICIAL LFC PHOTO SENT: %s",
-                article.get(
-                    "title",
-                    "",
-                ),
-            )
-
-            return True
-
-    return False
-
-
-def check_official_liverpool_site():
-
-    logger.info(
-        "Checking Official Liverpool website photos..."
+    return (
+        time.time()
+        - last_post
+        >= NORMAL_POST_MIN_GAP
     )
 
-    html = get_lfc_news_page()
 
-    if not html:
-        return 0
+def save_normal_post_time():
 
-    links = extract_lfc_article_links(
-        html
+    set_state(
+        "last_normal_post_time",
+        int(time.time())
     )
 
-    if not links:
-        return 0
 
-    posted = 0
+# =========================================================
+# IMAGE DOWNLOAD
+# =========================================================
 
-    for url in links:
-
-        article = extract_lfc_article(
-            url
-        )
-
-        if not article:
-            continue
-
-        if process_lfc_site_article(
-            article
-        ):
-            posted += 1
-
-        # Don't flood Telegram.
-        if posted >= 1:
-            break
-
-    return posted
 def download_image(url):
 
     if not url:
@@ -814,61 +440,8 @@ def download_image(url):
 
 
 # =========================================================
-# DATABASE HELPERS
+# IMAGE DATABASE
 # =========================================================
-
-def x_tweet_was_posted(tweet_id):
-
-    conn = get_db()
-
-    row = conn.execute(
-        """
-        SELECT tweet_id
-        FROM posted_x
-        WHERE tweet_id=?
-        LIMIT 1
-        """,
-        (tweet_id,),
-    ).fetchone()
-
-    conn.close()
-
-    return row is not None
-
-
-def save_x_post(
-    tweet_id,
-    tweet_text,
-    tweet_url,
-    image_hash=""
-):
-
-    conn = get_db()
-
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO posted_x
-        (
-            tweet_id,
-            tweet_text,
-            tweet_url,
-            image_hash,
-            posted_at
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            tweet_id,
-            tweet_text,
-            tweet_url,
-            image_hash,
-            int(time.time()),
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
 
 def image_was_used(image_hash):
 
@@ -923,20 +496,304 @@ def save_image(
     conn.close()
 
 
-def live_event_was_posted(
-    event_key
-):
+# =========================================================
+# OFFICIAL LIVERPOOL WEBSITE PHOTOS
+# =========================================================
+
+LFC_NEWS_URL = "https://www.liverpoolfc.com/news"
+
+
+def get_lfc_news_page():
+
+    try:
+
+        response = requests.get(
+            LFC_NEWS_URL,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+
+            logger.warning(
+                "Liverpool website HTTP %s",
+                response.status_code,
+            )
+
+            return None
+
+        return response.text
+
+    except Exception as e:
+
+        logger.warning(
+            "Liverpool website error: %s",
+            e,
+        )
+
+        return None
+
+
+def extract_lfc_article_links(html):
+
+    if not html:
+        return []
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    links = []
+
+    for a in soup.find_all(
+        "a",
+        href=True
+    ):
+
+        href = a.get(
+            "href",
+            ""
+        ).strip()
+
+        if not href:
+            continue
+
+        if href.startswith("/"):
+            href = urljoin(
+                "https://www.liverpoolfc.com",
+                href,
+            )
+
+        if not href.startswith(
+            "https://www.liverpoolfc.com/"
+        ):
+            continue
+
+        if "/news/" not in href:
+            continue
+
+        href = href.split("#")[0]
+
+        if href not in links:
+            links.append(href)
+
+    return links[:30]
+
+
+def is_lfc_photo_article(soup):
+
+    title = ""
+
+    if soup.title:
+
+        title = clean_text(
+            soup.title.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+    text = clean_text(
+        soup.get_text(
+            " ",
+            strip=True
+        )
+    ).lower()
+
+    photo_words = [
+        "photos",
+        "photo gallery",
+        "gallery",
+        "in photos",
+        "training photos",
+        "pictures",
+    ]
+
+    if any(
+        word in title.lower()
+        for word in photo_words
+    ):
+        return True
+
+    if any(
+        word in text[:5000]
+        for word in photo_words
+    ):
+        return True
+
+    return False
+
+
+def extract_lfc_article(url):
+
+    try:
+
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser",
+        )
+
+        if not is_lfc_photo_article(soup):
+            return None
+
+        # TITLE
+        title = ""
+
+        h1 = soup.find("h1")
+
+        if h1:
+
+            title = clean_text(
+                h1.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+        if not title and soup.title:
+
+            title = clean_text(
+                soup.title.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+        # DESCRIPTION
+        description = ""
+
+        meta = soup.find(
+            "meta",
+            attrs={
+                "name": "description"
+            },
+        )
+
+        if meta:
+
+            description = clean_text(
+                meta.get(
+                    "content",
+                    ""
+                )
+            )
+
+        # IMAGES
+        image_urls = []
+
+        for img in soup.find_all("img"):
+
+            src = (
+                img.get("src")
+                or img.get("data-src")
+                or img.get("data-lazy-src")
+            )
+
+            if not src:
+                continue
+
+            src = urljoin(
+                url,
+                src,
+            )
+
+            if not src.startswith("http"):
+                continue
+
+            lower = src.lower()
+
+            if any(
+                bad in lower
+                for bad in [
+                    "logo",
+                    "icon",
+                    "avatar",
+                    "placeholder",
+                ]
+            ):
+                continue
+
+            if src not in image_urls:
+                image_urls.append(src)
+
+        # OPEN GRAPH IMAGE
+        og = soup.find(
+            "meta",
+            property="og:image",
+        )
+
+        if og:
+
+            og_url = og.get(
+                "content",
+                "",
+            )
+
+            if og_url:
+
+                og_url = urljoin(
+                    url,
+                    og_url,
+                )
+
+                if og_url not in image_urls:
+
+                    image_urls.insert(
+                        0,
+                        og_url,
+                    )
+
+        if not title:
+            return None
+
+        if not image_urls:
+            return None
+
+        return {
+            "url": url,
+            "title": title,
+            "description": description,
+            "image_urls": image_urls[:15],
+        }
+
+    except Exception as e:
+
+        logger.warning(
+            "LFC article parse error: %s",
+            e,
+        )
+
+        return None
+
+
+def lfc_article_was_posted(url):
 
     conn = get_db()
 
     row = conn.execute(
         """
-        SELECT event_key
-        FROM live_events
-        WHERE event_key=?
+        SELECT tweet_id
+        FROM posted_x
+        WHERE tweet_url=?
         LIMIT 1
         """,
-        (event_key,),
+        (url,),
     ).fetchone()
 
     conn.close()
@@ -944,26 +801,33 @@ def live_event_was_posted(
     return row is not None
 
 
-def save_live_event(
-    event_key,
-    event_text
+def save_lfc_article(
+    url,
+    title,
+    image_hash=""
 ):
 
     conn = get_db()
 
     conn.execute(
         """
-        INSERT OR IGNORE INTO live_events
+        INSERT OR IGNORE INTO posted_x
         (
-            event_key,
-            event_text,
+            tweet_id,
+            tweet_text,
+            tweet_url,
+            image_hash,
             posted_at
         )
-        VALUES (?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
         """,
         (
-            event_key,
-            event_text,
+            "lfc_site|" + hashlib.sha256(
+                url.encode("utf-8")
+            ).hexdigest(),
+            title,
+            url,
+            image_hash,
             int(time.time()),
         ),
     )
@@ -972,54 +836,224 @@ def save_live_event(
     conn.close()
 
 
-def get_state(
-    key,
-    default=""
-):
+def make_lfc_site_caption(article):
+
+    title = clean_text(
+        article.get("title", "")
+    )
+
+    description = clean_text(
+        article.get("description", "")
+    )
+
+    lines = []
+
+    if title:
+        lines.append(title)
+
+    if (
+        description
+        and description != title
+    ):
+        lines.append(description)
+
+    lines.append("")
+    lines.append("@yegnaLiverpool")
+
+    caption = "\n\n".join(lines)
+
+    return caption[:1024]
+
+
+def process_lfc_site_article(article):
+
+    if not article:
+        return False
+
+    # GLOBAL 15-MINUTE LIMIT
+    if not can_post_normal():
+
+        logger.info(
+            "⏳ Official Liverpool photo skipped: "
+            "15-minute post gap has not passed."
+        )
+
+        return False
+
+    url = article.get(
+        "url",
+        "",
+    )
+
+    if not url:
+        return False
+
+    if lfc_article_was_posted(url):
+        return False
+
+    caption = make_lfc_site_caption(
+        article
+    )
+
+    image_urls = article.get(
+        "image_urls",
+        [],
+    )
+
+    for image_url in image_urls:
+
+        image = download_image(
+            image_url
+        )
+
+        if not image:
+            continue
+
+        if image_was_used(
+            image["hash"]
+        ):
+            continue
+
+        success = telegram_send_photo(
+            image["bytes"],
+            caption,
+        )
+
+        if success:
+
+            save_image(
+                image["hash"],
+                image["url"]
+            )
+
+            save_lfc_article(
+                url,
+                article.get(
+                    "title",
+                    "",
+                ),
+                image["hash"],
+            )
+
+            # Start the global 15-minute timer
+            save_normal_post_time()
+
+            logger.info(
+                "OFFICIAL LFC PHOTO SENT: %s",
+                article.get(
+                    "title",
+                    "",
+                ),
+            )
+
+            return True
+
+    return False
+
+
+def check_official_liverpool_site():
+
+    logger.info(
+        "Checking Official Liverpool website photos..."
+    )
+
+    # Do not even scan/post if 15 minutes
+    # have not passed.
+    if not can_post_normal():
+
+        logger.info(
+            "⏳ Official Liverpool website "
+            "check blocked by 15-minute limit."
+        )
+
+        return 0
+
+    html = get_lfc_news_page()
+
+    if not html:
+        return 0
+
+    links = extract_lfc_article_links(
+        html
+    )
+
+    if not links:
+        return 0
+
+    posted = 0
+
+    for url in links:
+
+        article = extract_lfc_article(
+            url
+        )
+
+        if not article:
+            continue
+
+        if process_lfc_site_article(
+            article
+        ):
+
+            posted += 1
+
+        # ONE normal post maximum
+        if posted >= 1:
+            break
+
+    return posted
+
+
+# =========================================================
+# X DATABASE
+# =========================================================
+
+def x_tweet_was_posted(tweet_id):
 
     conn = get_db()
 
     row = conn.execute(
         """
-        SELECT value
-        FROM bot_state
-        WHERE key=?
+        SELECT tweet_id
+        FROM posted_x
+        WHERE tweet_id=?
         LIMIT 1
         """,
-        (key,),
+        (tweet_id,),
     ).fetchone()
 
     conn.close()
 
-    return (
-        row[0]
-        if row
-        else default
-    )
+    return row is not None
 
 
-def set_state(
-    key,
-    value
+def save_x_post(
+    tweet_id,
+    tweet_text,
+    tweet_url,
+    image_hash=""
 ):
 
     conn = get_db()
 
     conn.execute(
         """
-        INSERT INTO bot_state(
-            key,
-            value
+        INSERT OR IGNORE INTO posted_x
+        (
+            tweet_id,
+            tweet_text,
+            tweet_url,
+            image_hash,
+            posted_at
         )
-        VALUES (?, ?)
-
-        ON CONFLICT(key)
-        DO UPDATE SET
-            value=excluded.value
+        VALUES (?, ?, ?, ?, ?)
         """,
         (
-            key,
-            str(value)
+            tweet_id,
+            tweet_text,
+            tweet_url,
+            image_hash,
+            int(time.time()),
         ),
     )
 
@@ -1268,7 +1302,6 @@ def make_x_caption(
     if not tweet_text:
         return ""
 
-    # ORIGINAL ENGLISH TEXT
     footer = (
         "\n\n@yegnaLiverpool"
     )
@@ -1298,30 +1331,6 @@ def make_x_caption(
     )
 
 
-def can_post_x():
-
-    last_post = get_state(
-        "last_x_post_time",
-        "0"
-    )
-
-    try:
-
-        last_post = int(
-            last_post
-        )
-
-    except Exception:
-
-        last_post = 0
-
-    return (
-        time.time()
-        - last_post
-        >= X_MIN_POST_GAP
-    )
-
-
 def process_x_post(
     tweet
 ):
@@ -1333,7 +1342,14 @@ def process_x_post(
     ):
         return False
 
-    if not can_post_x():
+    # GLOBAL 15-MINUTE NORMAL POST LIMIT
+    if not can_post_normal():
+
+        logger.info(
+            "⏳ X post skipped: "
+            "15-minute normal-post gap has not passed."
+        )
+
         return False
 
     text = tweet.get(
@@ -1425,10 +1441,10 @@ def process_x_post(
             image_hash,
         )
 
-        set_state(
-            "last_x_post_time",
-            int(time.time())
-        )
+        # IMPORTANT:
+        # Start global 15-minute timer
+        # only after successful normal post.
+        save_normal_post_time()
 
         logger.info(
             "OFFICIAL X POST SENT: %s",
@@ -1447,6 +1463,16 @@ def check_official_x():
         X_USERNAME
     )
 
+    # ONE NORMAL POST ONLY
+    if not can_post_normal():
+
+        logger.info(
+            "⏳ X check blocked: "
+            "15-minute normal-post gap has not passed."
+        )
+
+        return 0
+
     posts = (
         get_official_x_posts()
     )
@@ -1460,7 +1486,7 @@ def check_official_x():
         return 0
 
     # X returns newest first.
-    # Send oldest -> newest.
+    # Oldest -> newest
     posts.reverse()
 
     posted = 0
@@ -1473,7 +1499,63 @@ def check_official_x():
 
             posted += 1
 
+            # ONE POST MAXIMUM
+            break
+
     return posted
+
+
+# =========================================================
+# LIVE DATABASE
+# =========================================================
+
+def live_event_was_posted(
+    event_key
+):
+
+    conn = get_db()
+
+    row = conn.execute(
+        """
+        SELECT event_key
+        FROM live_events
+        WHERE event_key=?
+        LIMIT 1
+        """,
+        (event_key,),
+    ).fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
+def save_live_event(
+    event_key,
+    event_text
+):
+
+    conn = get_db()
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO live_events
+        (
+            event_key,
+            event_text,
+            posted_at
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            event_key,
+            event_text,
+            int(time.time()),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
 
 
 # =========================================================
@@ -1481,15 +1563,6 @@ def check_official_x():
 # =========================================================
 
 def get_liverpool_schedule():
-
-    """
-    Get Liverpool schedule from ESPN.
-
-    NOTE:
-    ESPN's soccer endpoint is competition-dependent.
-    The bot safely handles whatever Liverpool
-    fixtures ESPN returns.
-    """
 
     url = (
         "https://site.api.espn.com/apis/site/v2/"
@@ -1527,6 +1600,33 @@ def get_liverpool_schedule():
         )
 
         return None
+
+
+def match_is_live(
+    event
+):
+
+    if not event:
+        return False
+
+    status = (
+        event.get(
+            "status",
+            {}
+        ).get(
+            "type",
+            {}
+        )
+    )
+
+    state = str(
+        status.get(
+            "state",
+            ""
+        )
+    ).lower()
+
+    return state == "in"
 
 
 def find_liverpool_live_match():
@@ -1590,33 +1690,6 @@ def find_liverpool_live_match():
     return None
 
 
-def match_is_live(
-    event
-):
-
-    if not event:
-        return False
-
-    status = (
-        event.get(
-            "status",
-            {}
-        ).get(
-            "type",
-            {}
-        )
-    )
-
-    state = str(
-        status.get(
-            "state",
-            ""
-        )
-    ).lower()
-
-    return state == "in"
-
-
 def get_match_competition(
     event
 ):
@@ -1644,85 +1717,9 @@ def get_match_competition(
     )
 
 
-def get_match_teams(
-    event
-):
-
-    """
-    Club names remain English.
-    """
-
-    competition = event.get(
-        "competitions",
-        [{}]
-    )[0]
-
-    competitors = (
-        competition.get(
-            "competitors",
-            []
-        )
-    )
-
-    home = None
-    away = None
-
-    for competitor in competitors:
-
-        if (
-            competitor.get(
-                "homeAway"
-            )
-            == "home"
-        ):
-
-            home = competitor
-
-        elif (
-            competitor.get(
-                "homeAway"
-            )
-            == "away"
-        ):
-
-            away = competitor
-
-    if not home or not away:
-        return None, None
-
-    home_name = (
-        home.get(
-            "team",
-            {}
-        ).get(
-            "displayName"
-        )
-        or "Home"
-    )
-
-    away_name = (
-        away.get(
-            "team",
-            {}
-        ).get(
-            "displayName"
-        )
-        or "Away"
-    )
-
-    return (
-        clean_text(home_name),
-        clean_text(away_name)
-    )
-
-
 def get_score_line(
     event
 ):
-
-    """
-    Club names stay English.
-    """
 
     competition = event.get(
         "competitions",
@@ -1871,16 +1868,12 @@ def get_match_summary(
 
 
 # =========================================================
-# LIVE PLAYER NAME
+# LIVE PLAYER
 # =========================================================
 
 def get_player_name_from_play(
     play
 ):
-
-    """
-    Player names stay English.
-    """
 
     participants = play.get(
         "participants",
@@ -1933,10 +1926,6 @@ def detect_live_event_type(
     if not text:
         return None
 
-    # =====================================================
-    # GOAL
-    # =====================================================
-
     if (
         "goal" in text
         and "disallowed" not in text
@@ -1946,10 +1935,6 @@ def detect_live_event_type(
 
         return "goal"
 
-    # =====================================================
-    # RED CARD
-    # =====================================================
-
     if (
         "red card" in text
         or "sent off" in text
@@ -1958,17 +1943,9 @@ def detect_live_event_type(
 
         return "red_card"
 
-    # =====================================================
-    # YELLOW CARD
-    # =====================================================
-
     if "yellow card" in text:
 
         return "yellow_card"
-
-    # =====================================================
-    # SUBSTITUTION
-    # =====================================================
 
     if (
         "substitution" in text
@@ -1978,10 +1955,6 @@ def detect_live_event_type(
     ):
 
         return "substitution"
-
-    # =====================================================
-    # VAR
-    # =====================================================
 
     if (
         "var" in text
@@ -2004,13 +1977,6 @@ def amharic_live_message(
     status
 ):
 
-    """
-    Main LIVE language = Amharic.
-
-    Player names = English.
-    Club names = English.
-    """
-
     raw_text = clean_text(
         play.get(
             "text",
@@ -2024,10 +1990,6 @@ def amharic_live_message(
         )
     )
 
-    # =====================================================
-    # GOAL
-    # =====================================================
-
     if event_type == "goal":
 
         if player_name:
@@ -2040,13 +2002,7 @@ def amharic_live_message(
 
         else:
 
-            headline = (
-                "⚽ ጎል!"
-            )
-
-    # =====================================================
-    # RED CARD
-    # =====================================================
+            headline = "⚽ ጎል!"
 
     elif event_type == "red_card":
 
@@ -2066,10 +2022,6 @@ def amharic_live_message(
                 "ተመዝግቦበታል።"
             )
 
-    # =====================================================
-    # YELLOW CARD
-    # =====================================================
-
     elif event_type == "yellow_card":
 
         if player_name:
@@ -2086,10 +2038,6 @@ def amharic_live_message(
                 "🟨 ቢጫ ካርድ "
                 "ተመዝግቧል።"
             )
-
-    # =====================================================
-    # SUBSTITUTION
-    # =====================================================
 
     elif event_type == "substitution":
 
@@ -2108,10 +2056,6 @@ def amharic_live_message(
                 "🔄 የተጫዋች ቅያሪ "
                 "ተደርጓል።"
             )
-
-    # =====================================================
-    # VAR
-    # =====================================================
 
     elif event_type == "var":
 
@@ -2180,14 +2124,13 @@ def process_match_status(
         )
     ).lower()
 
-    # =====================================================
     # HALF TIME
-    # =====================================================
-
     is_half_time = (
         "halftime" in status_name
-        or "half" in short_detail
-        and "time" in short_detail
+        or (
+            "half" in short_detail
+            and "time" in short_detail
+        )
     )
 
     if is_half_time:
@@ -2218,10 +2161,7 @@ def process_match_status(
 
                 return 1
 
-    # =====================================================
     # FULL TIME
-    # =====================================================
-
     is_full_time = (
         "fulltime" in status_name
         or "full time" in short_detail
@@ -2301,10 +2241,7 @@ def process_live_match(
 
     posted = 0
 
-    # =====================================================
     # SCORE CHANGE
-    # =====================================================
-
     old_score = get_state(
         f"live_score_{event_id}",
         ""
@@ -2340,10 +2277,7 @@ def process_live_match(
                 score
             )
 
-    # =====================================================
-    # HALF TIME / FULL TIME
-    # =====================================================
-
+    # HALF / FULL TIME
     posted += (
         process_match_status(
             event,
@@ -2352,10 +2286,7 @@ def process_live_match(
         )
     )
 
-    # =====================================================
     # IMPORTANT EVENTS
-    # =====================================================
-
     if not summary:
         return posted
 
@@ -2403,7 +2334,6 @@ def process_live_match(
         if live_event_was_posted(
             event_key
         ):
-
             continue
 
         message = (
@@ -2444,13 +2374,6 @@ def process_live_match(
 # =========================================================
 
 def check_live():
-
-    """
-    Only Liverpool LIVE match.
-
-    If Liverpool isn't playing:
-    no LIVE message is posted.
-    """
 
     event = (
         find_liverpool_live_match()
@@ -2510,87 +2433,6 @@ def cleanup_old_live_data():
 
 def run_bot():
 
-    logger.info(
-        "=" * 60
-    )
-
-    logger.info(
-        "Liverpool Official X + LIVE Bot Started"
-    )
-
-    logger.info(
-        "Channel: %s",
-        CHANNEL
-    )
-
-    logger.info(
-        "Official X: @%s",
-        X_USERNAME
-    )
-
-    logger.info(
-        "X check every %s seconds",
-        X_CHECK_EVERY
-    )
-
-    logger.info(
-        "LIVE check every %s seconds",
-        LIVE_CHECK_EVERY
-    )
-
-    logger.info(
-        "LIVE language: Amharic"
-    )
-
-    logger.info(
-        "Player names: English"
-    )
-
-    logger.info(
-        "Club names: English"
-    )
-
-    logger.info(
-        "=" * 60
-    )
-
-    # Initialize database
-    conn = get_db()
-    conn.close()
-
-    # =====================================================
-    # STARTUP TEST
-    # =====================================================
-
-    if SEND_STARTUP_TEST:
-
-        success = telegram_send_message(
-            "🤖 Liverpool Official X + LIVE Bot "
-            "ተጀምሯል 🔴🚀"
-        )
-
-        if success:
-
-            logger.info(
-                "Startup test sent."
-            )
-
-        else:
-
-            logger.warning(
-                "Startup test failed."
-            )
-
-    last_x_check = 0
-    last_live_check = 0
-    last_cleanup = 0
-
-    # =========================================================
-# MAIN LOOP
-# =========================================================
-
-def run_bot():
-
     logger.info("=" * 60)
 
     logger.info(
@@ -2616,6 +2458,10 @@ def run_bot():
     )
 
     logger.info(
+        "Normal posts: 1 every 15 minutes maximum"
+    )
+
+    logger.info(
         "LIVE language: Amharic"
     )
 
@@ -2645,17 +2491,16 @@ def run_bot():
         )
 
         if success:
+
             logger.info(
                 "Startup test sent."
             )
+
         else:
+
             logger.warning(
                 "Startup test failed."
             )
-
-    # =====================================================
-    # TIMERS
-    # =====================================================
 
     last_x_check = 0
     last_live_check = 0
@@ -2807,245 +2652,4 @@ if __name__ == "__main__":
         )
 
         raise
-       # =========================================================
-# DUPLICATE POST + PHOTO/CAPTION PROTECTION
-# =========================================================
-
-import re
-import hashlib
-from difflib import SequenceMatcher
-
-
-def normalize_text(text):
-    if not text:
-        return ""
-
-    text = text.lower()
-    text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    return text
-
-
-def text_hash(text):
-    normalized = normalize_text(text)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def similar_text(text1, text2, threshold=0.82):
-    a = normalize_text(text1)
-    b = normalize_text(text2)
-
-    if not a or not b:
-        return False
-
-    if a == b:
-        return True
-
-    return SequenceMatcher(None, a, b).ratio() >= threshold
-
-
-def is_duplicate_post(db, headline, body):
-    """
-    Prevents the same/similar Liverpool news from being posted again.
-    Checks both headline and article body.
-    """
-
-    current_text = f"{headline} {body}"
-    current_hash = text_hash(current_text)
-
-    try:
-        rows = db.execute(
-            """
-            SELECT title, content, fingerprint
-            FROM posted_news
-            ORDER BY id DESC
-            LIMIT 100
-            """
-        ).fetchall()
-    except Exception:
-        return False
-
-    for row in rows:
-        old_title = row[0] or ""
-        old_body = row[1] or ""
-        old_hash = row[2] or ""
-
-        # Exact fingerprint match
-        if old_hash and old_hash == current_hash:
-            return True
-
-        # Same/similar headline
-        if similar_text(headline, old_title, 0.85):
-            return True
-
-        # Same/similar complete content
-        if similar_text(current_text, f"{old_title} {old_body}", 0.84):
-            return True
-
-    return False
-
-
-def save_post(db, headline, body):
-    """
-    Save only successfully published posts.
-    """
-
-    fingerprint = text_hash(f"{headline} {body}")
-
-    try:
-        db.execute(
-            """
-            INSERT INTO posted_news
-            (title, content, fingerprint, created_at)
-            VALUES (?, ?, ?, datetime('now'))
-            """,
-            (headline, body, fingerprint)
-        )
-        db.commit()
-    except Exception:
-        pass
-
-
-def find_valid_liverpool_photo(article_image, article_url, title):
-    """
-    Use the article's own Liverpool photo.
-    Never use a random unrelated photo.
-    """
-
-    if not article_image:
-        return None
-
-    image_url = article_image.strip()
-
-    if not image_url.startswith(("http://", "https://")):
-        return None
-
-    bad_words = [
-        "logo",
-        "avatar",
-        "icon",
-        "favicon",
-        "placeholder",
-        "default",
-        "banner-ad",
-        "advert"
-    ]
-
-    image_lower = image_url.lower()
-
-    for word in bad_words:
-        if word in image_lower:
-            return None
-
-    # The image must come from the article itself.
-    if article_url:
-        article_domain = re.sub(
-            r"^https?://(www\.)?",
-            "",
-            article_url.lower()
-        ).split("/")[0]
-
-        image_domain = re.sub(
-            r"^https?://(www\.)?",
-            "",
-            image_url.lower()
-        ).split("/")[0]
-
-        # Allow external image CDNs commonly used by news sites.
-        allowed_external = [
-            "cloudinary.com",
-            "images.ctfassets.net",
-            "akamaized.net",
-            "wp.com"
-        ]
-
-        if (
-            article_domain not in image_domain
-            and not any(x in image_domain for x in allowed_external)
-        ):
-            return None
-
-    return image_url
-
-
-def build_telegram_caption(headline, body):
-    """
-    Photo caption: headline + related Amharic news text.
-    """
-
-    headline = (headline or "").strip()
-    body = (body or "").strip()
-
-    caption = f"🔴 {headline}\n\n{body}"
-
-    # Telegram photo caption limit
-    if len(caption) > 1024:
-        caption = caption[:1020] + "..."
-
-    return caption
-
-
-def post_liverpool_news(db, headline, body, article_image=None, article_url=None):
-    """
-    Final protection before Telegram posting.
-    """
-
-    # -----------------------------------------------------
-    # 1. STOP DUPLICATES
-    # -----------------------------------------------------
-
-    if is_duplicate_post(db, headline, body):
-        logging.info("⛔ Duplicate news skipped: %s", headline)
-        return False
-
-    # -----------------------------------------------------
-    # 2. BUILD CAPTION
-    # -----------------------------------------------------
-
-    caption = build_telegram_caption(headline, body)
-
-    # -----------------------------------------------------
-    # 3. VALIDATE ARTICLE PHOTO
-    # -----------------------------------------------------
-
-    photo = find_valid_liverpool_photo(
-        article_image,
-        article_url,
-        headline
-    )
-
-    # -----------------------------------------------------
-    # 4. SEND PHOTO + RELATED TEXT
-    # -----------------------------------------------------
-
-    if photo:
-        success = telegram_send_photo(
-            photo,
-            caption
-        )
-    else:
-        success = telegram_send_message(
-            caption
-        )
-
-    # -----------------------------------------------------
-    # 5. SAVE ONLY AFTER SUCCESSFUL POST
-    # -----------------------------------------------------
-
-    if success:
-        save_post(
-            db,
-            headline,
-            body
-        )
-
-        logging.info(
-            "✅ Liverpool post published: %s",
-            headline
-        )
-
-        return True
-
-    return False 
+```
