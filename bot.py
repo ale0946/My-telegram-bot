@@ -2585,6 +2585,83 @@ def run_bot():
     last_live_check = 0
     last_cleanup = 0
 
+    # =========================================================
+# MAIN LOOP
+# =========================================================
+
+def run_bot():
+
+    logger.info("=" * 60)
+
+    logger.info(
+        "Liverpool Official X + LIVE Bot Started"
+    )
+
+    logger.info(
+        "Channel: %s",
+        CHANNEL
+    )
+
+    logger.info(
+        "Official X: @%s",
+        X_USERNAME
+    )
+
+    logger.info(
+        "Official Liverpool website photos: ENABLED"
+    )
+
+    logger.info(
+        "LIVE source: ESPN"
+    )
+
+    logger.info(
+        "LIVE language: Amharic"
+    )
+
+    logger.info(
+        "Player names: English"
+    )
+
+    logger.info(
+        "Club names: English"
+    )
+
+    logger.info("=" * 60)
+
+    # Initialize database
+    conn = get_db()
+    conn.close()
+
+    # =====================================================
+    # STARTUP TEST
+    # =====================================================
+
+    if SEND_STARTUP_TEST:
+
+        success = telegram_send_message(
+            "🤖 Liverpool Official X + LIVE Bot "
+            "ተጀምሯል 🔴🚀"
+        )
+
+        if success:
+            logger.info(
+                "Startup test sent."
+            )
+        else:
+            logger.warning(
+                "Startup test failed."
+            )
+
+    # =====================================================
+    # TIMERS
+    # =====================================================
+
+    last_x_check = 0
+    last_live_check = 0
+    last_lfc_site_check = 0
+    last_cleanup = 0
+
     # =====================================================
     # MAIN LOOP
     # =====================================================
@@ -2616,7 +2693,7 @@ def run_bot():
             last_x_check = now
 
         # =================================================
-        # LIVE
+        # LIVE MATCH
         # =================================================
 
         if (
@@ -2636,6 +2713,46 @@ def run_bot():
                 )
 
             last_live_check = now
+
+        # =================================================
+        # OFFICIAL LIVERPOOL WEBSITE PHOTOS
+        # =================================================
+
+        if (
+            now - last_lfc_site_check
+            >= LFC_SITE_CHECK_EVERY
+        ):
+
+            try:
+
+                posted = (
+                    check_official_liverpool_site()
+                )
+
+                if posted:
+
+                    logger.info(
+                        "Official Liverpool photo "
+                        "posted: %s",
+                        posted
+                    )
+
+                else:
+
+                    logger.info(
+                        "No new Official Liverpool "
+                        "photo found."
+                    )
+
+            except Exception as e:
+
+                logger.exception(
+                    "Official Liverpool website "
+                    "check error: %s",
+                    e
+                )
+
+            last_lfc_site_check = now
 
         # =================================================
         # DATABASE CLEANUP
@@ -2658,6 +2775,10 @@ def run_bot():
                 )
 
             last_cleanup = now
+
+        # =================================================
+        # SMALL SLEEP
+        # =================================================
 
         time.sleep(5)
 
@@ -2686,4 +2807,3 @@ if __name__ == "__main__":
         )
 
         raise
-
