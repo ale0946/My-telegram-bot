@@ -1,4 +1,11 @@
+import os
+import time
+import hashlib
+import sqlite3
+import logging
+import requests
 
+from dotenv import load_dotenv
 # =========================================================
 # CONFIG
 # =========================================================
