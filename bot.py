@@ -1,9 +1,7 @@
 import os
 import time
-import json
 import sqlite3
 import logging
-import hashlib
 import requests
 
 from dotenv import load_dotenv
@@ -22,8 +20,6 @@ CHANNEL = os.getenv(
     "@yegnaLiverpool"
 ).strip()
 
-
-# Groq
 GROQ_API_KEY = os.getenv(
     "GROQ_API_KEY",
     ""
@@ -35,13 +31,9 @@ GROQ_MODEL = os.getenv(
 ).strip()
 
 
-# ESPN Liverpool
 ESPN_TEAM_ID = "364"
 
-
-# Intervals
 LIVE_CHECK_EVERY = 30
-
 
 DB_FILE = "live_bot.db"
 
@@ -49,32 +41,14 @@ REQUEST_TIMEOUT = 30
 
 
 HEADERS = {
-    "User-Agent":
-        "Mozilla/5.0",
-    "Accept":
-        "application/json"
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json"
 }
 
 
-# =====================================================
-# VALIDATION
-# =====================================================
-
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN missing"
-    )
+    raise RuntimeError("BOT_TOKEN missing")
 
-
-if not GROQ_API_KEY:
-    raise RuntimeError(
-        "GROQ_API_KEY missing"
-    )
-
-
-# =====================================================
-# LOGGING
-# =====================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -118,35 +92,22 @@ def get_db():
 
 
 
-def get_state(
-    key,
-    default=""
-):
+def get_state(key):
 
     conn = get_db()
 
     row = conn.execute(
-        """
-        SELECT value
-        FROM state
-        WHERE key=?
-        """,
+        "SELECT value FROM state WHERE key=?",
         (key,)
     ).fetchone()
 
     conn.close()
 
-    if row:
-        return row[0]
-
-    return default
+    return row[0] if row else ""
 
 
 
-def set_state(
-    key,
-    value
-):
+def set_state(key,value):
 
     conn = get_db()
 
@@ -154,14 +115,10 @@ def set_state(
         """
         INSERT INTO state(key,value)
         VALUES(?,?)
-
         ON CONFLICT(key)
         DO UPDATE SET value=excluded.value
         """,
-        (
-            key,
-            str(value)
-        )
+        (key,str(value))
     )
 
     conn.commit()
@@ -169,18 +126,12 @@ def set_state(
 
 
 
-def event_exists(
-    key
-):
+def event_exists(key):
 
     conn = get_db()
 
     row = conn.execute(
-        """
-        SELECT event_key
-        FROM live_events
-        WHERE event_key=?
-        """,
+        "SELECT event_key FROM live_events WHERE key=?",
         (key,)
     ).fetchone()
 
@@ -190,10 +141,7 @@ def event_exists(
 
 
 
-def save_event(
-    key,
-    text
-):
+def save_event(key,text):
 
     conn = get_db()
 
@@ -211,16 +159,11 @@ def save_event(
 
     conn.commit()
     conn.close()
-
-
-
-# =====================================================
+    # =====================================================
 # TELEGRAM
 # =====================================================
 
-def telegram_send(
-    text
-):
+def telegram_send(text):
 
     url = (
         f"https://api.telegram.org/"
@@ -238,18 +181,15 @@ def telegram_send(
             timeout=30
         )
 
-        data = r.json()
-
-        return data.get(
+        return r.json().get(
             "ok",
             False
         )
 
-
     except Exception as e:
 
         logger.error(
-            "Telegram error %s",
+            "Telegram error: %s",
             e
         )
 
@@ -289,7 +229,7 @@ def get_schedule():
     except Exception as e:
 
         logger.error(
-            "ESPN schedule error %s",
+            "Schedule error: %s",
             e
         )
 
@@ -301,14 +241,12 @@ def is_live(event):
 
     try:
 
-        state = (
+        return (
             event["status"]
             ["type"]
             ["state"]
+            == "in"
         )
-
-        return state == "in"
-
 
     except:
 
@@ -335,8 +273,11 @@ def find_live_match():
 
 
     return None
+
+
+
 # =====================================================
-# ESPN MATCH DATA
+# MATCH SUMMARY
 # =====================================================
 
 def get_summary(event_id):
@@ -362,10 +303,11 @@ def get_summary(event_id):
 
         return r.json()
 
+
     except Exception as e:
 
         logger.error(
-            "Summary error %s",
+            "Summary error: %s",
             e
         )
 
@@ -377,7 +319,7 @@ def get_score(event):
 
     try:
 
-        competitors = (
+        teams = (
             event["competitions"][0]
             ["competitors"]
         )
@@ -385,7 +327,7 @@ def get_score(event):
         home = ""
         away = ""
 
-        for team in competitors:
+        for team in teams:
 
             name = (
                 team["team"]
@@ -399,20 +341,17 @@ def get_score(event):
 
             if team["homeAway"] == "home":
 
-                home = (
-                    f"{name} {score}"
-                )
+                home = f"{name} {score}"
 
             else:
 
-                away = (
-                    f"{name} {score}"
-                )
+                away = f"{name} {score}"
 
 
         return (
             f"{home} - {away}"
         )
+
 
     except:
 
@@ -433,31 +372,25 @@ def get_status(event):
     except:
 
         return "LIVE"
-
-
-
-# =====================================================
+  # =====================================================
 # GROQ AMHARIC
 # =====================================================
 
-def groq_amharic(
-    text
-):
+def groq_amharic(text):
 
     prompt = f"""
-Translate this football LIVE update into
-natural professional Amharic.
+Translate this football LIVE update into natural
+professional Amharic.
 
 Rules:
-- Do not add information.
+- Do not add any information.
 - Keep player names in English.
 - Keep club names in English.
-- Make it short like Telegram live update.
+- Make it short like Telegram LIVE update.
 
 Update:
 {text}
 """
-
 
     try:
 
@@ -487,13 +420,10 @@ Update:
             timeout=40
         )
 
-
         data = r.json()
 
-
         return (
-            data
-            ["choices"][0]
+            data["choices"][0]
             ["message"]
             ["content"]
             .strip()
@@ -503,7 +433,7 @@ Update:
     except Exception as e:
 
         logger.error(
-            "Groq error %s",
+            "Groq error: %s",
             e
         )
 
@@ -512,18 +442,15 @@ Update:
 
 
 # =====================================================
-# LIVE EVENTS
+# EVENTS
 # =====================================================
 
 def detect_event(play):
 
-    text = (
-        play.get(
-            "text",
-            ""
-        )
-        .lower()
-    )
+    text = play.get(
+        "text",
+        ""
+    ).lower()
 
 
     if "goal" in text:
@@ -541,7 +468,6 @@ def detect_event(play):
         return "red"
 
 
-
     if (
         "substitution" in text
         or "substituted" in text
@@ -550,7 +476,6 @@ def detect_event(play):
 
 
     if "var" in text:
-
         return "var"
 
 
@@ -559,49 +484,38 @@ def detect_event(play):
 
 
 def build_live_text(
-    event_type,
     play,
     score,
     status
 ):
 
-    raw = play.get(
-        "text",
-        ""
-    )
-
-
-    message = f"""
+    return f"""
 🔴 LIVE
 
-{raw}
+{play.get("text","")}
 
 📊 {score}
 ⏱️ {status}
 
 @yegnaLiverpool
-"""
-
-
-    return message.strip()
+""".strip()
 
 
 
-def process_live(
-    event
-):
+# =====================================================
+# PROCESS LIVE
+# =====================================================
+
+def process_live(event):
 
     event_id = str(
-        event.get(
-            "id"
-        )
+        event.get("id")
     )
 
 
     score = get_score(
         event
     )
-
 
     status = get_status(
         event
@@ -612,18 +526,25 @@ def process_live(
 
 
     # SCORE CHANGE
-
     old_score = get_state(
         f"score_{event_id}"
     )
 
 
+    # Ignore initial 0-0
+
     if (
         score
         and score != old_score
+        and score not in [
+            "",
+            "Liverpool 0 - Opponent 0"
+        ]
     ):
 
-        text = f"""
+        if old_score:
+
+            text = f"""
 🔴 LIVE
 
 📊 {score}
@@ -632,28 +553,26 @@ def process_live(
 @yegnaLiverpool
 """
 
+            amharic = groq_amharic(
+                text
+            )
 
-        amharic = groq_amharic(
-            text
+
+            if amharic:
+
+                if telegram_send(
+                    amharic
+                ):
+
+                    sent += 1
+
+
+        set_state(
+            f"score_{event_id}",
+            score
         )
 
 
-        if amharic:
-
-            if telegram_send(
-                amharic
-            ):
-
-                set_state(
-                    f"score_{event_id}",
-                    score
-                )
-
-                sent += 1
-
-
-
-    # EVENTS
 
     summary = get_summary(
         event_id
@@ -661,14 +580,15 @@ def process_live(
 
 
     if not summary:
+
         return sent
+
 
 
     for play in summary.get(
         "plays",
         []
     ):
-
 
         event_type = detect_event(
             play
@@ -679,13 +599,17 @@ def process_live(
             continue
 
 
+        play_id = play.get(
+            "id",
+            str(time.time())
+        )
+
 
         key = (
             f"{event_id}|"
             f"{event_type}|"
-            f"{play.get('id')}"
+            f"{play_id}"
         )
-
 
 
         if event_exists(
@@ -695,9 +619,7 @@ def process_live(
             continue
 
 
-
         raw = build_live_text(
-            event_type,
             play,
             score,
             status
@@ -713,7 +635,6 @@ def process_live(
             continue
 
 
-
         if telegram_send(
             amharic
         ):
@@ -726,15 +647,12 @@ def process_live(
             sent += 1
 
 
-
-    return sent   
+    return sent
 # =====================================================
 # HALF TIME / FULL TIME
 # =====================================================
 
-def check_match_end(
-    event
-):
+def check_match_end(event):
 
     event_id = str(
         event.get("id")
@@ -742,26 +660,17 @@ def check_match_end(
 
     try:
 
-        status = (
-            event["status"]
-            ["type"]
-        )
+        status = event["status"]["type"]
 
-        name = (
-            status.get(
-                "name",
-                ""
-            )
-            .lower()
-        )
+        name = status.get(
+            "name",
+            ""
+        ).lower()
 
-        detail = (
-            status.get(
-                "shortDetail",
-                ""
-            )
-            .lower()
-        )
+        detail = status.get(
+            "shortDetail",
+            ""
+        ).lower()
 
 
     except:
@@ -769,11 +678,9 @@ def check_match_end(
         return 0
 
 
-
     score = get_score(
         event
     )
-
 
 
     if (
@@ -786,9 +693,7 @@ def check_match_end(
         )
 
 
-        if not event_exists(
-            key
-        ):
+        if not event_exists(key):
 
             text = f"""
 ⏸️ የመጀመሪያው አጋማሽ ተጠናቋል።
@@ -798,24 +703,14 @@ def check_match_end(
 @yegnaLiverpool
 """
 
+            if telegram_send(text):
 
-            amharic = groq_amharic(
-                text
-            )
+                save_event(
+                    key,
+                    text
+                )
 
-
-            if amharic:
-
-                if telegram_send(
-                    amharic
-                ):
-
-                    save_event(
-                        key,
-                        amharic
-                    )
-
-                    return 1
+                return 1
 
 
 
@@ -830,9 +725,7 @@ def check_match_end(
         )
 
 
-        if not event_exists(
-            key
-        ):
+        if not event_exists(key):
 
             text = f"""
 🏁 ጨዋታው ተጠናቋል።
@@ -842,28 +735,17 @@ def check_match_end(
 @yegnaLiverpool
 """
 
+            if telegram_send(text):
 
-            amharic = groq_amharic(
-                text
-            )
+                save_event(
+                    key,
+                    text
+                )
 
-
-            if amharic:
-
-                if telegram_send(
-                    amharic
-                ):
-
-                    save_event(
-                        key,
-                        amharic
-                    )
-
-                    return 1
+                return 1
 
 
     return 0
-
 
 
 
@@ -887,7 +769,7 @@ def check_live():
 
 
     logger.info(
-        "Liverpool LIVE found: %s",
+        "Liverpool LIVE: %s",
         event.get(
             "name",
             ""
@@ -906,7 +788,6 @@ def check_live():
 
 
 
-
 # =====================================================
 # MAIN LOOP
 # =====================================================
@@ -922,25 +803,17 @@ def run_bot():
         CHANNEL
     )
 
-    logger.info(
-        "ESPN + Groq + Telegram"
-    )
-
 
     conn = get_db()
     conn.close()
 
 
-
     last_check = 0
-
 
 
     while True:
 
-
         now = time.time()
-
 
 
         if (
@@ -961,13 +834,10 @@ def run_bot():
                 )
 
 
-
             last_check = now
 
 
-
         time.sleep(5)
-
 
 
 
@@ -977,7 +847,6 @@ def run_bot():
 
 if __name__ == "__main__":
 
-
     try:
 
         run_bot()
@@ -985,14 +854,12 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
 
-
         logger.info(
             "Bot stopped"
         )
 
 
     except Exception as e:
-
 
         logger.exception(
             "Fatal error: %s",
